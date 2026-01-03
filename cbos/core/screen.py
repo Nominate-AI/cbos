@@ -45,10 +45,10 @@ class ScreenManager:
     ]
 
     ERROR_PATTERNS = [
-        r"Error:",
-        r"error:",
-        r"FAILED",
-        r"Exception:",
+        r"(?:^|\s)Error:",      # Error: at start or after whitespace
+        r"(?:^|\s)error:",      # error: at start or after whitespace
+        r"(?:^|\s)FAILED",      # FAILED at start or after whitespace
+        r"(?:^|\s)Exception:",  # Exception: at start or after whitespace
     ]
 
     def __init__(self, log_dir: Optional[Path] = None):
@@ -253,18 +253,35 @@ class ScreenManager:
         last_line = lines[-1] if lines else ""
         tail = "\n".join(lines[-15:])  # Last 15 lines for pattern matching
 
-        # Check for waiting state (prompt visible)
-        for pattern in self.WAITING_PATTERNS:
-            if re.search(pattern, last_line):
-                question = self._extract_last_question(lines)
-                logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> WAITING")
-                return SessionState.WAITING, question
+        # Log the last line for debugging (truncated)
+        last_line_preview = last_line[:60].replace('\n', '\\n') if last_line else "(empty)"
+        logger.debug(f"{log_prefix}Last line: {repr(last_line_preview)}")
 
-        # Also check if last line is just ">" with possible whitespace
-        if last_line.strip() in (">", "> ", ">\u2588"):
-            question = self._extract_last_question(lines)
-            logger.debug(f"{log_prefix}Prompt char detected -> WAITING")
-            return SessionState.WAITING, question
+        # Check for waiting state (prompt visible)
+        # Claude Code shows status bar lines below the prompt, so check last 5 lines
+        recent_lines = lines[-5:] if len(lines) >= 5 else lines
+        for line in recent_lines:
+            line_stripped = line.strip()
+            # Check for prompt patterns
+            for pattern in self.WAITING_PATTERNS:
+                if re.search(pattern, line_stripped):
+                    question = self._extract_last_question(lines)
+                    logger.debug(f"{log_prefix}Pattern '{pattern}' matched in recent lines -> WAITING")
+                    return SessionState.WAITING, question
+
+            # Also check if line is just ">" with possible cursor block or special chars
+            # 0xa0 = non-breaking space, \u2588 = █ cursor block
+            if line_stripped in (">", "> ", ">\u2588", ">█", ">\xa0", "> \xa0"):
+                question = self._extract_last_question(lines)
+                logger.debug(f"{log_prefix}Prompt char detected in recent lines -> WAITING")
+                return SessionState.WAITING, question
+            # Also check if line starts with ">" and rest is whitespace (including \xa0)
+            if line_stripped.startswith(">"):
+                rest = line_stripped[1:].replace("\xa0", " ").strip()
+                if len(rest) == 0:
+                    question = self._extract_last_question(lines)
+                    logger.debug(f"{log_prefix}Prompt '>' with whitespace detected -> WAITING")
+                    return SessionState.WAITING, question
 
         # Check for thinking state
         for pattern in self.THINKING_PATTERNS:
@@ -280,14 +297,17 @@ class ScreenManager:
                     logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> WORKING")
                     return SessionState.WORKING, None
 
-        # Check for error state
-        for pattern in self.ERROR_PATTERNS:
-            if re.search(pattern, tail):
-                logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> ERROR")
-                return SessionState.ERROR, None
+        # Check for error state - only in last 5 lines to avoid false positives from old output
+        error_check_lines = lines[-5:] if len(lines) >= 5 else lines
+        for line in error_check_lines:
+            for pattern in self.ERROR_PATTERNS:
+                if re.search(pattern, line):
+                    logger.debug(f"{log_prefix}Pattern '{pattern}' matched in recent lines -> ERROR")
+                    return SessionState.ERROR, None
 
-        # Default to idle
-        logger.debug(f"{log_prefix}No patterns matched -> IDLE")
+        # Default to idle - log more detail to help debug
+        last_chars = repr(last_line[-20:]) if len(last_line) > 20 else repr(last_line)
+        logger.debug(f"{log_prefix}No patterns matched -> IDLE (last_chars={last_chars})")
         return SessionState.IDLE, None
 
     def _extract_last_question(
