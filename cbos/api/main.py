@@ -349,7 +349,7 @@ def run():
     uvicorn.run(
         "cbos.api.main:app",
         host="127.0.0.1",
-        port=32900,
+        port=32205,
         reload=False,
     )
 

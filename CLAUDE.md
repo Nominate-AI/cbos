@@ -15,9 +15,9 @@ source ~/.pyenv/versions/nominates/bin/activate
 # Run the TUI
 cbos
 
-# Start the API server (port 32900)
+# Start the API server (port 32205)
 cbos-api
-# or: uvicorn cbos.api.main:app --host 127.0.0.1 --port 32900
+# or: uvicorn cbos.api.main:app --host 127.0.0.1 --port 32205
 
 # Run tests
 pytest tests/ -v
@@ -33,7 +33,7 @@ pip install -e ".[dev]"
 │                  TUI (cbos/tui/app.py)                     │
 │            Textual-based terminal interface                │
 └─────────────────────────┬──────────────────────────────────┘
-                          │ REST + WebSocket (port 32900)
+                          │ REST + WebSocket (port 32205)
                           ▼
 ┌────────────────────────────────────────────────────────────┐
 │               FastAPI Server (cbos/api/main.py)            │

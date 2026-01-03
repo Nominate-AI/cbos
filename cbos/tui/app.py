@@ -20,7 +20,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-API_BASE = "http://127.0.0.1:32900"
+API_BASE = "http://127.0.0.1:32205"
 
 
 # State icons with colors
