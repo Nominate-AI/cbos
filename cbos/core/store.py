@@ -32,6 +32,7 @@ class SessionStore:
         self._sessions: dict[str, Session] = {}
         self._stash: dict[str, StashedResponse] = {}
         self._path_map: dict[str, str] = {}  # slug -> path (user-configured)
+        self._state_cache: dict[str, tuple[SessionState, int]] = {}  # slug -> (state, count)
 
         self._load()
 
@@ -103,8 +104,30 @@ class SessionStore:
             try:
                 buffer = self.screen.capture_buffer(session.slug)
                 session.buffer_tail = buffer
-                state, question = self.screen.detect_state(buffer)
-                session.state = state
+                new_state, question = self.screen.detect_state(buffer)
+
+                # State hysteresis: only change state if consistent for 2+ readings
+                slug = session.slug
+                cached = self._state_cache.get(slug)
+
+                if cached is None:
+                    # First reading
+                    self._state_cache[slug] = (new_state, 1)
+                    session.state = new_state
+                elif cached[0] == new_state:
+                    # Same state, increment count
+                    self._state_cache[slug] = (new_state, cached[1] + 1)
+                    session.state = new_state
+                else:
+                    # Different state - only switch if we've seen current for a while
+                    if cached[1] >= 2:
+                        # Current state was stable, start counting new state
+                        self._state_cache[slug] = (new_state, 1)
+                    else:
+                        # Current state wasn't stable yet, switch immediately
+                        self._state_cache[slug] = (new_state, 1)
+                        session.state = new_state
+
                 session.last_question = question
                 session.last_activity = datetime.now()
             except Exception as e:

@@ -73,8 +73,8 @@ class BufferView(ScrollableContainer):
 
     def watch_buffer(self, value: str) -> None:
         content = self.query_one("#buffer-content", Static)
-        # Truncate to last 50 lines for display
-        lines = value.strip().split("\n")[-50:]
+        # Show last 100 lines, don't strip trailing whitespace
+        lines = value.split("\n")[-100:]
         content.update("\n".join(lines))
 
     def watch_question(self, value: str) -> None:
@@ -256,20 +256,41 @@ class CBOSApp(App):
 
     def _update_session_list(self, new_sessions: list[dict]) -> None:
         """Update session list on main thread"""
-        self.sessions = new_sessions
         session_list = self.query_one("#session-list", SessionList)
 
-        # Save current highlighted index
-        current_index = session_list.index
+        # Check if session list structure changed
+        old_slugs = [s.get("slug") for s in self.sessions]
+        new_slugs = [s.get("slug") for s in new_sessions]
 
-        session_list.clear()
+        self.sessions = new_sessions
 
-        for s in self.sessions:
-            session_list.append(SessionItem(s))
+        if old_slugs != new_slugs:
+            # Structure changed, rebuild list
+            current_index = session_list.index
+            session_list.clear()
 
-        # Restore highlight
-        if current_index is not None and 0 <= current_index < len(self.sessions):
-            session_list.index = current_index
+            for s in self.sessions:
+                session_list.append(SessionItem(s))
+
+            # Restore highlight
+            if current_index is not None and 0 <= current_index < len(self.sessions):
+                session_list.index = current_index
+        else:
+            # Same structure, update items in place
+            for i, (item, session) in enumerate(zip(session_list.children, self.sessions)):
+                if isinstance(item, SessionItem):
+                    # Update the session data
+                    item.session = session
+                    # Update the display
+                    state = session.get("state", "unknown")
+                    icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
+                    slug = session.get("slug", "???")
+                    text = Text()
+                    text.append(icon, style=style)
+                    text.append(slug, style="bold" if state == "waiting" else "")
+                    # Find the Static widget inside and update it
+                    static = item.query_one(Static)
+                    static.update(text)
 
     def _update_status(self, status: dict) -> None:
         """Update status display"""
