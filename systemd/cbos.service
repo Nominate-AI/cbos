@@ -1,0 +1,19 @@
+[Unit]
+Description=CBOS - Claude Code Session Manager API
+After=network.target
+
+[Service]
+Type=simple
+User=bisenbek
+Group=bisenbek
+WorkingDirectory=/home/bisenbek/projects/nominate/cbos
+Environment="PATH=/home/bisenbek/.pyenv/versions/nominates/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/bisenbek/.pyenv/versions/nominates/bin/uvicorn cbos.api.main:app --host 127.0.0.1 --port 32900
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cbos
+
+[Install]
+WantedBy=multi-user.target
