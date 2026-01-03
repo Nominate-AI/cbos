@@ -240,7 +240,7 @@ class CBOSApp(App):
 
     async def on_mount(self) -> None:
         """Initialize the app"""
-        await self.refresh_sessions()
+        self.refresh_sessions()
         self.set_interval(3, self.refresh_sessions)
 
     @work(exclusive=True)
