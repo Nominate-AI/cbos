@@ -273,6 +273,110 @@ def delete_stash(stash_id: str):
 
 
 # ============================================================================
+# Intelligence Endpoints
+# ============================================================================
+
+from ..intelligence.service import get_intelligence_service
+from ..intelligence.models import SuggestionResponse, SummaryResponse, PrioritizedSession
+
+
+@app.get("/intelligence/health")
+async def intelligence_health():
+    """Check intelligence service health"""
+    service = get_intelligence_service()
+    return await service.health_check()
+
+
+@app.post("/sessions/{slug}/suggest", response_model=SuggestionResponse)
+async def suggest_response(slug: str):
+    """Generate AI-suggested response for a waiting session"""
+    session = store.get(slug)
+    if not session:
+        raise HTTPException(404, f"Session '{slug}' not found")
+
+    if session.state.value != "waiting":
+        raise HTTPException(400, f"Session '{slug}' is not waiting for input (state: {session.state.value})")
+
+    question = session.last_question or ""
+    if not question:
+        raise HTTPException(400, f"Session '{slug}' has no question to respond to")
+
+    buffer = store.get_buffer(slug, lines=50)
+
+    service = get_intelligence_service()
+    suggestion = await service.suggest_response(
+        question=question,
+        context=buffer,
+        session_slug=slug,
+    )
+
+    return SuggestionResponse(
+        slug=slug,
+        question=question,
+        suggestion=suggestion,
+    )
+
+
+@app.get("/sessions/{slug}/summary", response_model=SummaryResponse)
+async def get_session_summary(slug: str):
+    """Get AI-generated summary of session activity"""
+    session = store.get(slug)
+    if not session:
+        raise HTTPException(404, f"Session '{slug}' not found")
+
+    buffer = store.get_buffer(slug, lines=200)
+
+    service = get_intelligence_service()
+    summary = await service.summarize_session(
+        buffer=buffer,
+        session_slug=slug,
+    )
+
+    return SummaryResponse(
+        slug=slug,
+        summary=summary,
+    )
+
+
+@app.get("/sessions/prioritized", response_model=list[PrioritizedSession])
+async def get_prioritized_sessions():
+    """Get waiting sessions ranked by priority"""
+    from datetime import datetime
+
+    store.sync_with_screen()
+    store.refresh_states()
+    waiting = store.waiting()
+
+    if not waiting:
+        return []
+
+    service = get_intelligence_service()
+    prioritized = []
+
+    for session in waiting:
+        wait_time = int((datetime.now() - session.last_activity).total_seconds())
+        buffer = store.get_buffer(session.slug, lines=50)
+
+        priority = await service.calculate_priority(
+            question=session.last_question or "",
+            context=buffer,
+            wait_time_seconds=wait_time,
+            session_slug=session.slug,
+        )
+
+        prioritized.append(PrioritizedSession(
+            slug=session.slug,
+            state=session.state.value,
+            question=session.last_question,
+            priority=priority,
+        ))
+
+    # Sort by priority score descending
+    prioritized.sort(key=lambda p: p.priority.score, reverse=True)
+    return prioritized
+
+
+# ============================================================================
 # WebSocket
 # ============================================================================
 

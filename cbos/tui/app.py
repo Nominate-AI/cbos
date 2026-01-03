@@ -87,6 +87,40 @@ class BufferView(ScrollableContainer):
             highlight.update("")
 
 
+class SuggestionPanel(Static):
+    """Display AI-generated response suggestion"""
+
+    suggestion = reactive(None)
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="suggestion-content")
+
+    def watch_suggestion(self, value) -> None:
+        content = self.query_one("#suggestion-content", Static)
+        if value:
+            text = Text()
+            text.append("AI Suggestion ", style="bold cyan")
+            text.append(f"({value.get('confidence', 0):.0%} confident)\n", style="dim")
+            text.append(value.get('response', ''), style="bold white")
+            text.append(f"\n{value.get('reasoning', '')}", style="dim italic")
+
+            alternatives = value.get('alternatives', [])
+            if alternatives:
+                text.append("\nAlternatives: ", style="dim")
+                text.append(" | ".join(alternatives), style="dim")
+
+            content.update(Panel(
+                text,
+                title="[bold cyan]💡 Suggestion[/] [dim](Enter=accept, e=edit, Esc=dismiss)[/]",
+                border_style="cyan"
+            ))
+        else:
+            content.update("")
+
+    def clear(self) -> None:
+        self.suggestion = None
+
+
 class StatusLegend(Static):
     """Status legend for sidebar"""
 
@@ -183,11 +217,23 @@ class CBOSApp(App):
     #input-field {
         margin-top: 1;
     }
+
+    #suggestion-panel {
+        dock: bottom;
+        height: auto;
+        max-height: 8;
+        margin: 0 1;
+    }
+
+    #suggestion-content {
+        height: auto;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("s", "suggest", "AI Suggest"),
         Binding("enter", "focus_input", "Send", show=True),
         Binding("i", "focus_input", "Input", show=False),
         Binding("escape", "focus_list", "Back", show=False),
@@ -202,6 +248,7 @@ class CBOSApp(App):
         super().__init__()
         self.sessions: list[dict] = []
         self.selected_slug: str | None = None
+        self.current_suggestion: dict | None = None
         self.client = httpx.AsyncClient(base_url=API_BASE, timeout=10)
 
     def compose(self) -> ComposeResult:
@@ -217,6 +264,7 @@ class CBOSApp(App):
 
             with Vertical(id="content"):
                 yield Static("Select a session", id="content-header")
+                yield SuggestionPanel(id="suggestion-panel")
                 yield BufferView(id="buffer-view")
                 with Vertical(id="input-area"):
                     yield Label("Response (Enter to send, Esc to cancel):")
@@ -387,12 +435,66 @@ class CBOSApp(App):
         self.refresh_sessions()
 
     def action_focus_input(self) -> None:
-        """Focus the input field"""
-        self.query_one("#input-field", Input).focus()
+        """Focus the input field, optionally with suggestion"""
+        input_field = self.query_one("#input-field", Input)
+
+        # If we have an active suggestion, pre-fill the input
+        if self.current_suggestion:
+            response = self.current_suggestion.get("response", "")
+            if response:
+                input_field.value = response
+            # Clear the suggestion panel
+            self.query_one("#suggestion-panel", SuggestionPanel).clear()
+            self.current_suggestion = None
+
+        input_field.focus()
 
     def action_focus_list(self) -> None:
-        """Focus the session list"""
+        """Focus the session list and clear suggestion"""
+        self.query_one("#suggestion-panel", SuggestionPanel).clear()
+        self.current_suggestion = None
         self.query_one("#session-list", SessionList).focus()
+
+    @work(thread=True)
+    def action_suggest(self) -> None:
+        """Get AI suggestion for selected session"""
+        if not self.selected_slug:
+            self.call_from_thread(self.notify, "No session selected", severity="warning")
+            return
+
+        self.call_from_thread(self.notify, "Getting AI suggestion...", timeout=2)
+
+        import httpx as sync_httpx
+
+        try:
+            with sync_httpx.Client(base_url=API_BASE, timeout=30) as client:
+                resp = client.post(f"/sessions/{self.selected_slug}/suggest")
+                resp.raise_for_status()
+                data = resp.json()
+
+                suggestion = data.get("suggestion", {})
+                self.call_from_thread(self._show_suggestion, suggestion)
+
+        except sync_httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                detail = e.response.json().get("detail", "Session not waiting")
+                self.call_from_thread(self.notify, detail, severity="warning")
+            else:
+                self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+
+    def _show_suggestion(self, suggestion: dict) -> None:
+        """Show suggestion in the panel"""
+        self.current_suggestion = suggestion
+        panel = self.query_one("#suggestion-panel", SuggestionPanel)
+        panel.suggestion = suggestion
+
+        confidence = suggestion.get("confidence", 0)
+        if confidence >= 0.7:
+            self.notify("High confidence suggestion ready", timeout=2)
+        else:
+            self.notify("Suggestion ready (review recommended)", timeout=2)
 
     @work(thread=True)
     def action_interrupt(self) -> None:
