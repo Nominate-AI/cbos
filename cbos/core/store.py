@@ -4,12 +4,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-import logging
 
 from .models import Session, SessionState, StashedResponse
 from .screen import ScreenManager
+from .logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("store")
 
 
 class SessionStore:
@@ -100,20 +100,23 @@ class SessionStore:
 
     def refresh_states(self) -> list[Session]:
         """Update state for all sessions by reading buffers"""
+        logger.debug(f"Refreshing states for {len(self._sessions)} sessions")
+
         for session in self._sessions.values():
+            slug = session.slug
             try:
-                buffer = self.screen.capture_buffer(session.slug)
+                buffer = self.screen.capture_buffer(slug)
                 session.buffer_tail = buffer
-                new_state, question = self.screen.detect_state(buffer)
+                new_state, question = self.screen.detect_state(buffer, slug)
 
                 # State hysteresis: only change state if consistent for 2+ readings
-                slug = session.slug
                 cached = self._state_cache.get(slug)
 
                 if cached is None:
                     # First reading - set initial state
                     self._state_cache[slug] = (new_state, 1, new_state)
                     session.state = new_state
+                    logger.debug(f"[{slug}] Initial state: {new_state.value}")
                 else:
                     # Handle old 2-tuple format gracefully
                     if len(cached) == 2:
@@ -126,21 +129,25 @@ class SessionStore:
                         new_count = count + 1
                         if new_count >= 2:
                             # State is now stable, apply it
+                            if stable_state != new_state:
+                                logger.info(f"[{slug}] State change: {stable_state.value} -> {new_state.value} (stable after {new_count} readings)")
                             session.state = new_state
                             self._state_cache[slug] = (new_state, new_count, new_state)
                         else:
                             # Not yet stable, keep showing old stable state
+                            logger.debug(f"[{slug}] Pending: {new_state.value} (count={new_count}, showing {stable_state.value})")
                             self._state_cache[slug] = (new_state, new_count, stable_state)
                             session.state = stable_state
                     else:
                         # Different state - start counting from 1
+                        logger.debug(f"[{slug}] New detection: {new_state.value} (was tracking {current_state.value}, showing {stable_state.value})")
                         self._state_cache[slug] = (new_state, 1, stable_state)
                         session.state = stable_state  # Keep old stable state
 
                 session.last_question = question
                 session.last_activity = datetime.now()
             except Exception as e:
-                logger.warning(f"Failed to refresh state for {session.slug}: {e}")
+                logger.warning(f"[{slug}] Failed to refresh state: {e}")
                 session.state = SessionState.ERROR
 
         return list(self._sessions.values())

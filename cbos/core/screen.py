@@ -7,6 +7,9 @@ from typing import Optional
 from dataclasses import dataclass
 
 from .models import SessionState
+from .logging import get_logger
+
+logger = get_logger("screen")
 
 
 @dataclass
@@ -54,6 +57,7 @@ class ScreenManager:
 
     def list_sessions(self) -> list[ScreenSession]:
         """List all screen sessions"""
+        logger.debug("Listing screen sessions")
         result = subprocess.run(
             ["screen", "-ls"], capture_output=True, text=True
         )
@@ -78,6 +82,7 @@ class ScreenManager:
                 )
             )
 
+        logger.debug(f"Found {len(sessions)} sessions: {[s.name for s in sessions]}")
         return sessions
 
     def get_session(self, slug: str) -> Optional[ScreenSession]:
@@ -163,6 +168,7 @@ class ScreenManager:
             Cleaned buffer content (ANSI codes stripped)
         """
         tmp = Path(f"/tmp/cbos_{slug}.txt")
+        logger.debug(f"[{slug}] Capturing buffer to {tmp}")
 
         result = subprocess.run(
             ["screen", "-S", slug, "-X", "hardcopy", "-h", str(tmp)],
@@ -170,12 +176,15 @@ class ScreenManager:
         )
 
         if result.returncode != 0:
+            logger.error(f"[{slug}] hardcopy failed: rc={result.returncode}")
             raise RuntimeError(f"Failed to capture buffer for '{slug}'")
 
         if not tmp.exists():
+            logger.warning(f"[{slug}] Buffer file not found: {tmp}")
             return ""
 
         content = tmp.read_text(errors="replace")
+        raw_len = len(content)
 
         # Strip ANSI escape codes
         content = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", content)
@@ -189,7 +198,10 @@ class ScreenManager:
         while lines and not lines[0].strip():
             lines.pop(0)
 
-        return "\n".join(lines[-tail_lines:])
+        result_lines = lines[-tail_lines:]
+        logger.debug(f"[{slug}] Buffer: {raw_len} bytes -> {len(result_lines)} lines")
+
+        return "\n".join(result_lines)
 
     def send_input(self, slug: str, text: str) -> bool:
         """
@@ -220,17 +232,21 @@ class ScreenManager:
         )
         return result.returncode == 0
 
-    def detect_state(self, buffer: str) -> tuple[SessionState, Optional[str]]:
+    def detect_state(self, buffer: str, slug: str = "") -> tuple[SessionState, Optional[str]]:
         """
         Detect Claude Code state from buffer content.
 
         Args:
             buffer: The captured buffer content
+            slug: Session identifier for logging
 
         Returns:
             Tuple of (state, last_question_if_waiting)
         """
+        log_prefix = f"[{slug}] " if slug else ""
+
         if not buffer.strip():
+            logger.debug(f"{log_prefix}Empty buffer -> UNKNOWN")
             return SessionState.UNKNOWN, None
 
         lines = buffer.strip().split("\n")
@@ -241,16 +257,19 @@ class ScreenManager:
         for pattern in self.WAITING_PATTERNS:
             if re.search(pattern, last_line):
                 question = self._extract_last_question(lines)
+                logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> WAITING")
                 return SessionState.WAITING, question
 
         # Also check if last line is just ">" with possible whitespace
         if last_line.strip() in (">", "> ", ">\u2588"):
             question = self._extract_last_question(lines)
+            logger.debug(f"{log_prefix}Prompt char detected -> WAITING")
             return SessionState.WAITING, question
 
         # Check for thinking state
         for pattern in self.THINKING_PATTERNS:
             if re.search(pattern, tail):
+                logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> THINKING")
                 return SessionState.THINKING, None
 
         # Check for working state (tool execution) - check each recent line
@@ -258,14 +277,17 @@ class ScreenManager:
         for line in recent_lines:
             for pattern in self.WORKING_PATTERNS:
                 if re.search(pattern, line):
+                    logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> WORKING")
                     return SessionState.WORKING, None
 
         # Check for error state
         for pattern in self.ERROR_PATTERNS:
             if re.search(pattern, tail):
+                logger.debug(f"{log_prefix}Pattern '{pattern}' matched -> ERROR")
                 return SessionState.ERROR, None
 
         # Default to idle
+        logger.debug(f"{log_prefix}No patterns matched -> IDLE")
         return SessionState.IDLE, None
 
     def _extract_last_question(

@@ -1,7 +1,6 @@
 """FastAPI server for CBOS"""
 
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -17,9 +16,11 @@ from ..core.models import (
     StashedResponse,
     WSMessage,
 )
+from ..core.logging import setup_logging, get_logger
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Initialize logging
+setup_logging()
+logger = get_logger("api")
 
 # Global state
 store: Optional[SessionStore] = None
@@ -29,13 +30,22 @@ refresh_task: Optional[asyncio.Task] = None
 
 async def broadcast(message: dict):
     """Broadcast a message to all connected WebSocket clients"""
+    if not connected_clients:
+        return
+
     dead_clients = set()
+    msg_type = message.get("type", "unknown")
+    logger.debug(f"Broadcasting '{msg_type}' to {len(connected_clients)} clients")
+
     for ws in connected_clients:
         try:
             await ws.send_json(message)
         except Exception:
             dead_clients.add(ws)
-    connected_clients.difference_update(dead_clients)
+
+    if dead_clients:
+        logger.debug(f"Removed {len(dead_clients)} dead clients")
+        connected_clients.difference_update(dead_clients)
 
 
 async def refresh_loop():
