@@ -19,6 +19,8 @@ from textual import work
 from rich.text import Text
 from rich.panel import Panel
 
+from ..core.version import get_version_string
+
 API_BASE = "http://127.0.0.1:32205"
 
 
@@ -137,6 +139,15 @@ class StatusLegend(Static):
         yield Static(text)
 
 
+class VersionBar(Static):
+    """Version info bar at bottom of screen"""
+
+    def compose(self) -> ComposeResult:
+        text = Text()
+        text.append(get_version_string(), style="dim")
+        yield Static(text, id="version-text")
+
+
 class CBOSApp(App):
     """CBOS - Claude Code Operating System TUI"""
 
@@ -228,6 +239,18 @@ class CBOSApp(App):
     #suggestion-content {
         height: auto;
     }
+
+    #version-bar {
+        dock: bottom;
+        height: 1;
+        background: $surface-darken-2;
+        text-align: right;
+        padding: 0 1;
+    }
+
+    #version-text {
+        text-align: right;
+    }
     """
 
     BINDINGS = [
@@ -276,6 +299,7 @@ class CBOSApp(App):
                     )
 
         yield Footer()
+        yield VersionBar(id="version-bar")
 
     async def on_mount(self) -> None:
         """Initialize the app"""
