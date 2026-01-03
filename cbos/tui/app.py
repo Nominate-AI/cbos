@@ -18,7 +18,6 @@ from textual.widgets import (
 from textual import work
 from rich.text import Text
 from rich.panel import Panel
-from rich.syntax import Syntax
 
 API_BASE = "http://127.0.0.1:32205"
 
@@ -88,30 +87,20 @@ class BufferView(ScrollableContainer):
             highlight.update("")
 
 
-class StatusBar(Static):
-    """Status bar showing session counts"""
+class StatusLegend(Static):
+    """Status legend for sidebar"""
 
-    def update_status(self, status: dict) -> None:
-        total = status.get("total", 0)
-        waiting = status.get("waiting", 0)
-        working = status.get("working", 0)
-        thinking = status.get("thinking", 0)
-        idle = status.get("idle", 0)
-
+    def compose(self) -> ComposeResult:
         text = Text()
-        text.append(f" {total} sessions ", style="bold")
-        text.append("│ ")
-
-        if waiting > 0:
-            text.append(f"● {waiting} waiting ", style="bold red")
-        if thinking > 0:
-            text.append(f"◐ {thinking} thinking ", style="yellow")
-        if working > 0:
-            text.append(f"◑ {working} working ", style="cyan")
-        if idle > 0:
-            text.append(f"○ {idle} idle ", style="dim")
-
-        self.update(text)
+        text.append("● ", style="bold red")
+        text.append("wait ", style="dim")
+        text.append("◐ ", style="bold yellow")
+        text.append("think\n", style="dim")
+        text.append("◑ ", style="bold cyan")
+        text.append("work ", style="dim")
+        text.append("○ ", style="dim")
+        text.append("idle", style="dim")
+        yield Static(text)
 
 
 class CBOSApp(App):
@@ -152,6 +141,12 @@ class CBOSApp(App):
         background: $accent;
     }
 
+    #status-legend {
+        dock: bottom;
+        height: 2;
+        padding: 0 1;
+    }
+
     #content {
         width: 1fr;
         border: solid $secondary;
@@ -188,13 +183,6 @@ class CBOSApp(App):
     #input-field {
         margin-top: 1;
     }
-
-    StatusBar {
-        dock: bottom;
-        height: 1;
-        background: $primary-darken-2;
-        padding: 0 1;
-    }
     """
 
     BINDINGS = [
@@ -218,13 +206,14 @@ class CBOSApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield StatusBar(id="status-bar")
 
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
                 yield Label("Sessions", id="sidebar-title")
                 yield Rule()
                 yield SessionList(id="session-list")
+                yield Rule()
+                yield StatusLegend(id="status-legend")
 
             with Vertical(id="content"):
                 yield Static("Select a session", id="content-header")
@@ -243,114 +232,134 @@ class CBOSApp(App):
         self.refresh_sessions()
         self.set_interval(3, self.refresh_sessions)
 
-    @work(exclusive=True)
-    async def refresh_sessions(self) -> None:
+    @work(exclusive=True, thread=True)
+    def refresh_sessions(self) -> None:
         """Refresh session list from API"""
+        import httpx as sync_httpx
+
         try:
-            resp = await self.client.get("/sessions")
-            resp.raise_for_status()
-            self.sessions = resp.json()
+            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
+                resp = client.get("/sessions")
+                resp.raise_for_status()
+                new_sessions = resp.json()
 
-            # Update session list, preserving selection
-            session_list = self.query_one("#session-list", SessionList)
+                # Call UI updates on main thread
+                self.call_from_thread(self._update_session_list, new_sessions)
 
-            # Find current selection index
-            current_index = session_list.index
-
-            session_list.clear()
-
-            for s in self.sessions:
-                session_list.append(SessionItem(s))
-
-            # Restore selection if valid
-            if current_index is not None and 0 <= current_index < len(self.sessions):
-                session_list.index = current_index
-
-            # Update status bar
-            status_resp = await self.client.get("/sessions/status")
-            status = status_resp.json()
-            self.query_one("#status-bar", StatusBar).update_status(status)
-
-            # If we have a selected session, update its buffer
-            if self.selected_slug:
-                self.load_buffer()
+                # Get status
+                status_resp = client.get("/sessions/status")
+                status = status_resp.json()
+                self.call_from_thread(self._update_status, status)
 
         except Exception as e:
-            self.notify(f"Error: {e}", severity="error", timeout=5)
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=5)
 
-    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+    def _update_session_list(self, new_sessions: list[dict]) -> None:
+        """Update session list on main thread"""
+        self.sessions = new_sessions
+        session_list = self.query_one("#session-list", SessionList)
+
+        # Save current highlighted index
+        current_index = session_list.index
+
+        session_list.clear()
+
+        for s in self.sessions:
+            session_list.append(SessionItem(s))
+
+        # Restore highlight
+        if current_index is not None and 0 <= current_index < len(self.sessions):
+            session_list.index = current_index
+
+    def _update_status(self, status: dict) -> None:
+        """Update status display"""
+        # Status is now shown in sidebar legend, could add counts to header if needed
+        pass
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle session selection"""
         if isinstance(event.item, SessionItem):
             self.selected_slug = event.item.session.get("slug")
-            await self.load_buffer()
+            self.load_buffer()
 
-    @work(exclusive=True)
-    async def load_buffer(self) -> None:
+    @work(exclusive=True, thread=True)
+    def load_buffer(self) -> None:
         """Load buffer for selected session"""
         if not self.selected_slug:
             return
 
+        import httpx as sync_httpx
+
         try:
-            # Get session details
-            resp = await self.client.get(f"/sessions/{self.selected_slug}")
-            resp.raise_for_status()
-            session = resp.json()
+            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
+                # Get session details
+                resp = client.get(f"/sessions/{self.selected_slug}")
+                resp.raise_for_status()
+                session = resp.json()
 
-            # Update header
-            state = session.get("state", "unknown")
-            icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
-            header = self.query_one("#content-header", Static)
-            header.update(
-                Text.from_markup(
-                    f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
+                # Get buffer
+                buf_resp = client.get(
+                    f"/sessions/{self.selected_slug}/buffer",
+                    params={"lines": 100},
                 )
-            )
+                buf_resp.raise_for_status()
+                buffer_data = buf_resp.json()
 
-            # Get buffer
-            buf_resp = await self.client.get(
-                f"/sessions/{self.selected_slug}/buffer",
-                params={"lines": 100},
-            )
-            buf_resp.raise_for_status()
-            buffer_data = buf_resp.json()
-
-            # Update buffer view
-            buffer_view = self.query_one("#buffer-view", BufferView)
-            buffer_view.buffer = buffer_data.get("buffer", "")
-            buffer_view.question = session.get("last_question", "") or ""
+                # Update UI on main thread
+                self.call_from_thread(
+                    self._update_buffer_view,
+                    session,
+                    buffer_data.get("buffer", "")
+                )
 
         except Exception as e:
-            self.notify(f"Error loading buffer: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Error loading buffer: {e}", severity="error")
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    def _update_buffer_view(self, session: dict, buffer: str) -> None:
+        """Update buffer view on main thread"""
+        state = session.get("state", "unknown")
+        icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
+
+        header = self.query_one("#content-header", Static)
+        header.update(
+            Text.from_markup(
+                f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
+            )
+        )
+
+        buffer_view = self.query_one("#buffer-view", BufferView)
+        buffer_view.buffer = buffer
+        buffer_view.question = session.get("last_question", "") or ""
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission"""
         text = event.value.strip()
         if not text or not self.selected_slug:
             return
 
-        await self.send_input(text)
+        self.send_input(text)
         event.input.clear()
         self.query_one("#session-list", SessionList).focus()
 
-    @work
-    async def send_input(self, text: str) -> None:
+    @work(thread=True)
+    def send_input(self, text: str) -> None:
         """Send input to the selected session"""
         if not self.selected_slug:
             return
 
-        try:
-            resp = await self.client.post(
-                f"/sessions/{self.selected_slug}/send",
-                json={"text": text},
-            )
-            resp.raise_for_status()
-            self.notify(f"Sent to {self.selected_slug}", timeout=2)
+        import httpx as sync_httpx
 
-            # Refresh after a short delay
-            await self.load_buffer()
+        try:
+            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
+                resp = client.post(
+                    f"/sessions/{self.selected_slug}/send",
+                    json={"text": text},
+                )
+                resp.raise_for_status()
+                self.call_from_thread(self.notify, f"Sent to {self.selected_slug}", timeout=2)
 
         except Exception as e:
-            self.notify(f"Error: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
 
     def action_refresh(self) -> None:
         """Refresh sessions"""
@@ -364,21 +373,22 @@ class CBOSApp(App):
         """Focus the session list"""
         self.query_one("#session-list", SessionList).focus()
 
-    @work
-    async def action_interrupt(self) -> None:
+    @work(thread=True)
+    def action_interrupt(self) -> None:
         """Send interrupt to selected session"""
         if not self.selected_slug:
-            self.notify("No session selected", severity="warning")
+            self.call_from_thread(self.notify, "No session selected", severity="warning")
             return
 
+        import httpx as sync_httpx
+
         try:
-            resp = await self.client.post(
-                f"/sessions/{self.selected_slug}/interrupt"
-            )
-            resp.raise_for_status()
-            self.notify(f"Interrupted {self.selected_slug}", timeout=2)
+            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
+                resp = client.post(f"/sessions/{self.selected_slug}/interrupt")
+                resp.raise_for_status()
+                self.call_from_thread(self.notify, f"Interrupted {self.selected_slug}", timeout=2)
         except Exception as e:
-            self.notify(f"Error: {e}", severity="error")
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
 
     def action_attach(self) -> None:
         """Show attach command for selected session"""
