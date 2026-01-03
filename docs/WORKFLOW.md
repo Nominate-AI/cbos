@@ -13,7 +13,7 @@ flowchart TB
 
     subgraph Capture["2. Buffer Capture"]
         C --> D[screen -X hardcopy]
-        D --> E[Read /tmp/cbos_{slug}.txt]
+        D --> E["Read /tmp/cbos_SLUG.txt"]
         E --> F[Strip ANSI Codes]
         F --> G[Clean Buffer Text]
     end
@@ -106,7 +106,7 @@ sequenceDiagram
     participant FS as Filesystem
 
     Store->>SM: capture_buffer(slug, lines=100)
-    SM->>Screen: screen -S {slug} -X hardcopy -h /tmp/cbos_{slug}.txt
+    SM->>Screen: screen -S SLUG -X hardcopy -h /tmp/cbos_SLUG.txt
     Screen->>FS: Write scrollback to file
     SM->>FS: Read file content
     FS-->>SM: Raw buffer text
