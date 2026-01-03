@@ -111,22 +111,31 @@ class SessionStore:
                 cached = self._state_cache.get(slug)
 
                 if cached is None:
-                    # First reading
-                    self._state_cache[slug] = (new_state, 1)
-                    session.state = new_state
-                elif cached[0] == new_state:
-                    # Same state, increment count
-                    self._state_cache[slug] = (new_state, cached[1] + 1)
+                    # First reading - set initial state
+                    self._state_cache[slug] = (new_state, 1, new_state)
                     session.state = new_state
                 else:
-                    # Different state - only switch if we've seen current for a while
-                    if cached[1] >= 2:
-                        # Current state was stable, start counting new state
-                        self._state_cache[slug] = (new_state, 1)
+                    # Handle old 2-tuple format gracefully
+                    if len(cached) == 2:
+                        cached = (cached[0], cached[1], session.state)
+
+                    current_state, count, stable_state = cached
+
+                    if current_state == new_state:
+                        # Same state detected, increment count
+                        new_count = count + 1
+                        if new_count >= 2:
+                            # State is now stable, apply it
+                            session.state = new_state
+                            self._state_cache[slug] = (new_state, new_count, new_state)
+                        else:
+                            # Not yet stable, keep showing old stable state
+                            self._state_cache[slug] = (new_state, new_count, stable_state)
+                            session.state = stable_state
                     else:
-                        # Current state wasn't stable yet, switch immediately
-                        self._state_cache[slug] = (new_state, 1)
-                        session.state = new_state
+                        # Different state - start counting from 1
+                        self._state_cache[slug] = (new_state, 1, stable_state)
+                        session.state = stable_state  # Keep old stable state
 
                 session.last_question = question
                 session.last_activity = datetime.now()

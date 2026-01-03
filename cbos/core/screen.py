@@ -36,8 +36,9 @@ class ScreenManager:
     ]
 
     WORKING_PATTERNS = [
-        r"(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch)\(",
-        r"Running:",
+        r"^[✓✗⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]",  # Tool status indicators at line start
+        r"^\s*(Bash|Read|Write|Edit|Grep|Glob|Task|WebFetch)\(",  # Active tool calls
+        r"Running in the background",
     ]
 
     ERROR_PATTERNS = [
@@ -252,10 +253,12 @@ class ScreenManager:
             if re.search(pattern, tail):
                 return SessionState.THINKING, None
 
-        # Check for working state (tool execution)
-        for pattern in self.WORKING_PATTERNS:
-            if re.search(pattern, tail):
-                return SessionState.WORKING, None
+        # Check for working state (tool execution) - check each recent line
+        recent_lines = lines[-10:]
+        for line in recent_lines:
+            for pattern in self.WORKING_PATTERNS:
+                if re.search(pattern, line):
+                    return SessionState.WORKING, None
 
         # Check for error state
         for pattern in self.ERROR_PATTERNS:
