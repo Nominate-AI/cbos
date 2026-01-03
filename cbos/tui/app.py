@@ -251,12 +251,20 @@ class CBOSApp(App):
             resp.raise_for_status()
             self.sessions = resp.json()
 
-            # Update session list
+            # Update session list, preserving selection
             session_list = self.query_one("#session-list", SessionList)
+
+            # Find current selection index
+            current_index = session_list.index
+
             session_list.clear()
 
             for s in self.sessions:
                 session_list.append(SessionItem(s))
+
+            # Restore selection if valid
+            if current_index is not None and 0 <= current_index < len(self.sessions):
+                session_list.index = current_index
 
             # Update status bar
             status_resp = await self.client.get("/sessions/status")
@@ -265,7 +273,7 @@ class CBOSApp(App):
 
             # If we have a selected session, update its buffer
             if self.selected_slug:
-                await self.load_buffer()
+                self.load_buffer()
 
         except Exception as e:
             self.notify(f"Error: {e}", severity="error", timeout=5)

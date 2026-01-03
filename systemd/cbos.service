@@ -15,12 +15,11 @@ SyslogIdentifier=cbos
 StandardOutput=journal
 StandardError=journal
 
-# Security hardening
+# Security hardening (PrivateTmp disabled - screen hardcopy needs shared /tmp)
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/bisenbek/projects/nominate/cbos /home/bisenbek/.cbos /home/bisenbek/claude_logs /tmp
-PrivateTmp=true
+ReadWritePaths=/home/bisenbek/projects/nominate/cbos /home/bisenbek/.cbos /home/bisenbek/claude_logs /tmp /run/screen
 
 [Install]
 WantedBy=multi-user.target
