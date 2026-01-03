@@ -9,19 +9,34 @@ from .models import (
     QuestionType,
     RelatedSession,
     RoutingCandidate,
+    SuggestionResponse,
+    SummaryResponse,
+    PrioritizedSession,
+    RouteResponse,
 )
 from .suggestions import SuggestionGenerator
-from .service import IntelligenceService
+from .summarizer import SessionSummarizer
+from .priority import PriorityCalculator
+from .embeddings import SessionEmbeddingStore
+from .service import IntelligenceService, get_intelligence_service
 
 __all__ = [
     "CBAIClient",
     "IntelligenceSettings",
     "IntelligenceService",
+    "get_intelligence_service",
     "Suggestion",
     "Summary",
     "Priority",
     "QuestionType",
     "RelatedSession",
     "RoutingCandidate",
+    "SuggestionResponse",
+    "SummaryResponse",
+    "PrioritizedSession",
+    "RouteResponse",
     "SuggestionGenerator",
+    "SessionSummarizer",
+    "PriorityCalculator",
+    "SessionEmbeddingStore",
 ]

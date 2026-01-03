@@ -5,8 +5,11 @@ from typing import Optional
 
 from .client import CBAIClient
 from .config import settings
-from .models import Suggestion, Summary, Priority, QuestionType
+from .models import Suggestion, Summary, Priority, RelatedSession, RoutingCandidate
 from .suggestions import SuggestionGenerator
+from .summarizer import SessionSummarizer
+from .priority import PriorityCalculator
+from .embeddings import SessionEmbeddingStore
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +28,12 @@ class IntelligenceService:
 
     def __init__(self, cbai_url: Optional[str] = None):
         self.client = CBAIClient(cbai_url)
-        self.suggestions = SuggestionGenerator(self.client)
 
-        # Caches (to be expanded)
-        self._summary_cache: dict[str, tuple[Summary, float]] = {}
+        # Feature modules
+        self.suggestions = SuggestionGenerator(self.client)
+        self.summarizer = SessionSummarizer(self.client)
+        self.priority = PriorityCalculator(self.client)
+        self.embeddings = SessionEmbeddingStore(self.client)
 
     async def health_check(self) -> dict:
         """Check health of intelligence service and CBAI"""
@@ -36,10 +41,11 @@ class IntelligenceService:
         return {
             "intelligence": "ok",
             "cbai": cbai_health,
+            "embeddings_count": self.embeddings.session_count,
         }
 
     # =========================================================================
-    # Suggestions
+    # Suggestions (Phase 2)
     # =========================================================================
 
     async def suggest_response(
@@ -48,17 +54,7 @@ class IntelligenceService:
         context: str,
         session_slug: Optional[str] = None,
     ) -> Suggestion:
-        """
-        Generate a response suggestion for a waiting session.
-
-        Args:
-            question: The question Claude is asking
-            context: Recent buffer content
-            session_slug: Session identifier
-
-        Returns:
-            Suggestion with response and confidence
-        """
+        """Generate a response suggestion for a waiting session."""
         return await self.suggestions.generate(
             question=question,
             context=context,
@@ -74,69 +70,11 @@ class IntelligenceService:
         buffer: str,
         session_slug: Optional[str] = None,
     ) -> Summary:
-        """
-        Generate a summary of session activity.
-
-        Args:
-            buffer: Session buffer content
-            session_slug: Session identifier
-
-        Returns:
-            Summary with short/detailed descriptions and topics
-        """
-        import hashlib
-        buffer_hash = hashlib.md5(buffer.encode()).hexdigest()[:8]
-
-        # Check cache
-        if session_slug and session_slug in self._summary_cache:
-            cached, timestamp = self._summary_cache[session_slug]
-            if cached.buffer_hash == buffer_hash:
-                return cached
-
-        # Generate summary using CBAI
-        try:
-            short_summary = await self.client.summarize(
-                buffer[-3000:],  # Last 3000 chars
-                max_length=20,
-                style="concise",
-            )
-
-            detailed_summary = await self.client.summarize(
-                buffer[-3000:],
-                max_length=100,
-                style="detailed",
-            )
-
-            topics = await self.client.topics(buffer[-3000:])
-
-            # Extract last action from buffer
-            lines = buffer.strip().split("\n")
-            last_action = lines[-1][:100] if lines else ""
-
-            summary = Summary(
-                short=short_summary or "Working...",
-                detailed=detailed_summary or short_summary or "Session active",
-                topics=topics[:5],
-                last_action=last_action,
-                buffer_hash=buffer_hash,
-            )
-
-            # Cache it
-            if session_slug:
-                import time
-                self._summary_cache[session_slug] = (summary, time.time())
-
-            return summary
-
-        except Exception as e:
-            logger.error(f"Failed to summarize session: {e}")
-            return Summary(
-                short="Unable to summarize",
-                detailed=str(e),
-                topics=[],
-                last_action="",
-                buffer_hash=buffer_hash,
-            )
+        """Generate a summary of session activity."""
+        return await self.summarizer.summarize(
+            buffer=buffer,
+            session_slug=session_slug,
+        )
 
     # =========================================================================
     # Priority (Phase 4)
@@ -149,61 +87,43 @@ class IntelligenceService:
         wait_time_seconds: int,
         session_slug: Optional[str] = None,
     ) -> Priority:
-        """
-        Calculate priority score for a waiting session.
-
-        Args:
-            question: The question being asked
-            context: Recent buffer content
-            wait_time_seconds: How long session has been waiting
-            session_slug: Session identifier
-
-        Returns:
-            Priority with score and reasoning
-        """
-        # First, classify the question type
-        suggestion = await self.suggest_response(question, context, session_slug)
-        question_type = suggestion.question_type
-
-        # Base score from question type
-        type_scores = {
-            QuestionType.ERROR: 0.9,
-            QuestionType.DECISION: 0.7,
-            QuestionType.PERMISSION: 0.5,
-            QuestionType.CLARIFICATION: 0.6,
-            QuestionType.CONFIRMATION: 0.4,
-            QuestionType.INFORMATION: 0.3,
-            QuestionType.UNKNOWN: 0.5,
-        }
-        base_score = type_scores.get(question_type, 0.5)
-
-        # Adjust for wait time (max +0.3 for waiting > 5 minutes)
-        wait_factor = min(wait_time_seconds / 300, 1.0) * 0.3
-        score = min(base_score + wait_factor, 1.0)
-
-        # Generate reason
-        reasons = []
-        if question_type == QuestionType.ERROR:
-            reasons.append("Error requires attention")
-        if question_type == QuestionType.DECISION:
-            reasons.append("Decision needed to proceed")
-        if wait_time_seconds > 120:
-            reasons.append(f"Waiting {wait_time_seconds // 60}+ minutes")
-
-        return Priority(
-            score=score,
-            reason="; ".join(reasons) or "Standard priority",
-            question_type=question_type,
+        """Calculate priority for a waiting session."""
+        return await self.priority.calculate(
+            question=question,
+            context=context,
             wait_time_seconds=wait_time_seconds,
-            suggested_action=suggestion.response if suggestion.confidence > 0.6 else "Review and respond",
+            session_slug=session_slug,
         )
 
     # =========================================================================
     # Embeddings / Related Sessions (Phase 5)
     # =========================================================================
 
+    async def update_session_embedding(
+        self,
+        slug: str,
+        buffer: str,
+        summary: Optional[str] = None,
+        topics: Optional[list[str]] = None,
+    ) -> None:
+        """Update embedding for a session."""
+        await self.embeddings.update(
+            slug=slug,
+            buffer=buffer,
+            summary=summary,
+            topics=topics,
+        )
+
+    def find_related_sessions(
+        self,
+        slug: str,
+        threshold: float = None,
+    ) -> list[RelatedSession]:
+        """Find sessions related to the given session."""
+        return self.embeddings.find_related(slug, threshold)
+
     async def embed_text(self, text: str) -> list[float]:
-        """Generate embedding for text"""
+        """Generate embedding for arbitrary text."""
         return await self.client.embed(text)
 
     # =========================================================================
@@ -220,17 +140,91 @@ class IntelligenceService:
 
         Args:
             task_description: Description of the task
-            available_sessions: List of session dicts with slug, summary
+            available_sessions: List of session dicts with slug, state, summary
 
         Returns:
-            Routing recommendation
+            Routing recommendation with session and reasoning
         """
-        # TODO: Implement in Phase 6
-        return {
-            "recommended": None,
-            "reason": "Routing not yet implemented",
-            "suggest_new": True,
-        }
+        if not available_sessions:
+            return {
+                "recommended": None,
+                "reason": "No sessions available",
+                "alternatives": [],
+                "suggest_new": True,
+            }
+
+        try:
+            # Embed the task description
+            task_embedding = await self.client.embed(task_description)
+
+            if isinstance(task_embedding, list) and len(task_embedding) > 0:
+                if isinstance(task_embedding[0], list):
+                    task_embedding = task_embedding[0]
+
+            # Find similar sessions
+            matches = self.embeddings.find_similar_to_text(
+                text=task_description,
+                embedding=task_embedding,
+                threshold=settings.routing_match_threshold,
+            )
+
+            if not matches:
+                return {
+                    "recommended": None,
+                    "reason": "No sessions match this task",
+                    "alternatives": [],
+                    "suggest_new": True,
+                }
+
+            # Filter to available (non-error) sessions
+            available_slugs = {
+                s["slug"] for s in available_sessions
+                if s.get("state") != "error"
+            }
+
+            valid_matches = [m for m in matches if m.slug in available_slugs]
+
+            if not valid_matches:
+                return {
+                    "recommended": None,
+                    "reason": "Matching sessions not available",
+                    "alternatives": [],
+                    "suggest_new": True,
+                }
+
+            best = valid_matches[0]
+
+            # Build alternatives
+            alternatives = []
+            for match in valid_matches[1:4]:
+                session = next(
+                    (s for s in available_sessions if s["slug"] == match.slug),
+                    None
+                )
+                if session:
+                    alternatives.append(RoutingCandidate(
+                        slug=match.slug,
+                        match_score=match.similarity,
+                        current_state=session.get("state", "unknown"),
+                        summary=match.context_summary,
+                        availability="waiting" if session.get("state") == "waiting" else "busy",
+                    ))
+
+            return {
+                "recommended": best.slug,
+                "reason": f"Best match ({best.similarity:.0%} similar): {best.context_summary[:50]}",
+                "alternatives": alternatives,
+                "suggest_new": best.similarity < 0.7,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to suggest route: {e}")
+            return {
+                "recommended": None,
+                "reason": f"Routing error: {e}",
+                "alternatives": [],
+                "suggest_new": True,
+            }
 
 
 # Global service instance

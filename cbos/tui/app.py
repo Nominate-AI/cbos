@@ -234,6 +234,8 @@ class CBOSApp(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "suggest", "AI Suggest"),
+        Binding("p", "priority", "Priority"),
+        Binding("x", "related", "Related"),
         Binding("enter", "focus_input", "Send", show=True),
         Binding("i", "focus_input", "Input", show=False),
         Binding("escape", "focus_list", "Back", show=False),
@@ -521,6 +523,74 @@ class CBOSApp(App):
 
         cmd = f"screen -r {self.selected_slug}"
         self.notify(f"Run: {cmd}", timeout=5)
+
+    @work(thread=True)
+    def action_priority(self) -> None:
+        """Show priority-ranked waiting sessions"""
+        self.call_from_thread(self.notify, "Fetching priorities...", timeout=2)
+
+        import httpx as sync_httpx
+
+        try:
+            with sync_httpx.Client(base_url=API_BASE, timeout=30) as client:
+                resp = client.get("/sessions/prioritized")
+                resp.raise_for_status()
+                prioritized = resp.json()
+
+                if not prioritized:
+                    self.call_from_thread(self.notify, "No sessions waiting", severity="warning")
+                    return
+
+                # Format priority list
+                lines = ["Priority Queue:"]
+                for i, p in enumerate(prioritized[:5], 1):
+                    score = p.get("priority", {}).get("score", 0)
+                    reason = p.get("priority", {}).get("reason", "")
+                    slug = p.get("slug", "???")
+                    lines.append(f"  {i}. [{score:.0%}] {slug} - {reason}")
+
+                self.call_from_thread(self.notify, "\n".join(lines), timeout=10)
+
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+
+    @work(thread=True)
+    def action_related(self) -> None:
+        """Find sessions related to the selected one"""
+        if not self.selected_slug:
+            self.call_from_thread(self.notify, "No session selected", severity="warning")
+            return
+
+        self.call_from_thread(self.notify, "Finding related sessions...", timeout=2)
+
+        import httpx as sync_httpx
+
+        try:
+            with sync_httpx.Client(base_url=API_BASE, timeout=30) as client:
+                resp = client.get(f"/sessions/{self.selected_slug}/related")
+                resp.raise_for_status()
+                related = resp.json()
+
+                if not related:
+                    self.call_from_thread(
+                        self.notify,
+                        f"No sessions related to {self.selected_slug}",
+                        timeout=3
+                    )
+                    return
+
+                # Format related list
+                lines = [f"Sessions related to {self.selected_slug}:"]
+                for r in related[:5]:
+                    similarity = r.get("similarity", 0)
+                    slug = r.get("slug", "???")
+                    topics = ", ".join(r.get("shared_topics", [])[:3]) or "various"
+                    lines.append(f"  [{similarity:.0%}] {slug} ({topics})")
+
+                self.call_from_thread(self.notify, "\n".join(lines), timeout=10)
+
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
 
 
 def main() -> None:

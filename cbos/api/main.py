@@ -376,6 +376,64 @@ async def get_prioritized_sessions():
     return prioritized
 
 
+@app.get("/sessions/{slug}/related")
+async def get_related_sessions(slug: str) -> list:
+    """Find sessions working on similar tasks"""
+    session = store.get(slug)
+    if not session:
+        raise HTTPException(404, f"Session '{slug}' not found")
+
+    service = get_intelligence_service()
+
+    # Make sure this session has an embedding
+    buffer = store.get_buffer(slug, lines=100)
+    if buffer:
+        summary = await service.summarize_session(buffer, slug)
+        await service.update_session_embedding(
+            slug=slug,
+            buffer=buffer,
+            summary=summary.short,
+            topics=summary.topics,
+        )
+
+    related = service.find_related_sessions(slug)
+    return [r.model_dump() for r in related]
+
+
+@app.post("/sessions/route")
+async def route_task(task: str) -> dict:
+    """Suggest which session should handle a task"""
+    store.sync_with_screen()
+    store.refresh_states()
+    sessions = store.all()
+
+    service = get_intelligence_service()
+
+    # Update embeddings for all sessions
+    for session in sessions:
+        buffer = store.get_buffer(session.slug, lines=100)
+        if buffer:
+            try:
+                summary = await service.summarize_session(buffer, session.slug)
+                await service.update_session_embedding(
+                    slug=session.slug,
+                    buffer=buffer,
+                    summary=summary.short,
+                    topics=summary.topics,
+                )
+            except Exception:
+                pass
+
+    # Get routing suggestion
+    session_data = [
+        {"slug": s.slug, "state": s.state.value}
+        for s in sessions
+    ]
+
+    result = await service.suggest_route(task, session_data)
+    return result
+
+
 # ============================================================================
 # WebSocket
 # ============================================================================
