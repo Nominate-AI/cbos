@@ -57,8 +57,9 @@ async def refresh_loop():
     while True:
         try:
             await asyncio.sleep(2)  # Poll every 2 seconds
-            store.sync_with_screen()
-            store.refresh_states()
+            # Run blocking subprocess calls in thread to not block event loop
+            await asyncio.to_thread(store.sync_with_screen)
+            await asyncio.to_thread(store.refresh_states)
 
             # Check for sessions waiting for input
             waiting = store.waiting()

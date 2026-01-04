@@ -96,11 +96,15 @@ class StreamManager:
                 logger.debug(f"Found existing typescript: {slug} at position {self._positions[slug]}")
 
         try:
+            logger.debug(f"Starting watchfiles on {self.stream_dir}")
             async for changes in watchfiles.awatch(
                 self.stream_dir,
                 watch_filter=lambda change, path: path.endswith('.typescript'),
-                poll_delay_ms=100,  # Check every 100ms
+                poll_delay_ms=100,  # Check every 100ms for low latency
+                debounce=500,  # Reduce from default 1600ms for faster response
+                force_polling=True,  # More reliable under systemd than inotify
             ):
+                logger.debug(f"File changes detected: {len(changes)}")
                 if not self._running:
                     break
 
