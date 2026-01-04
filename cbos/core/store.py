@@ -19,6 +19,10 @@ class SessionStore:
     Syncs with actual GNU Screen sessions and maintains state.
     """
 
+    # STREAMING MODE: Disable state heuristics when using streaming transport
+    # State detection will be handled differently in streaming mode
+    STREAMING_MODE = True
+
     def __init__(
         self,
         persist_path: Optional[Path] = None,
@@ -100,6 +104,18 @@ class SessionStore:
 
     def refresh_states(self) -> list[Session]:
         """Update state for all sessions by reading buffers"""
+
+        # STREAMING MODE: Skip state heuristics, just update activity timestamp
+        if self.STREAMING_MODE:
+            logger.debug(f"Streaming mode: skipping state heuristics for {len(self._sessions)} sessions")
+            for session in self._sessions.values():
+                # All sessions default to IDLE in streaming mode
+                # Actual state will be inferred from stream content by clients
+                session.state = SessionState.IDLE
+                session.last_activity = datetime.now()
+            return list(self._sessions.values())
+
+        # Legacy polling mode with state detection heuristics
         logger.debug(f"Refreshing states for {len(self._sessions)} sessions")
 
         for session in self._sessions.values():

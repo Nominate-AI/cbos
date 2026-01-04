@@ -109,6 +109,7 @@ class ScreenManager:
         path: str,
         resume: bool = False,
         no_color: bool = True,
+        streaming: bool = True,
     ) -> ScreenSession:
         """
         Launch a new Claude Code session in screen.
@@ -118,7 +119,10 @@ class ScreenManager:
             path: Working directory for Claude Code
             resume: Whether to pass --resume to claude
             no_color: Whether to disable ANSI colors
+            streaming: Whether to wrap in script -f for streaming (default: True)
         """
+        from .config import get_config
+
         # Check if session already exists
         existing = self.get_session(slug)
         if existing:
@@ -136,8 +140,27 @@ class ScreenManager:
         if no_color:
             env_setup = "NO_COLOR=1 "
 
-        # Full command
-        bash_cmd = f"cd '{path}' && {env_setup}{claude_cmd}"
+        if streaming:
+            # Streaming mode: wrap claude in script -f for real-time capture
+            config = get_config()
+            stream_dir = config.stream.stream_dir
+            stream_dir.mkdir(parents=True, exist_ok=True)
+
+            typescript_file = stream_dir / f"{slug}.typescript"
+            timing_file = stream_dir / f"{slug}.timing"
+
+            # script -f flushes output immediately
+            # -c runs a command instead of shell
+            script_cmd = (
+                f"script -f --timing={timing_file} {typescript_file} "
+                f"-c 'cd \"{path}\" && {env_setup}{claude_cmd}'"
+            )
+            bash_cmd = script_cmd
+            logger.info(f"Launching streaming session: {slug} -> {typescript_file}")
+        else:
+            # Legacy mode: direct command
+            bash_cmd = f"cd '{path}' && {env_setup}{claude_cmd}"
+            logger.info(f"Launching legacy session: {slug}")
 
         cmd = [
             "screen",

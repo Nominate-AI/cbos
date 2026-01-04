@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..core.store import SessionStore
+from ..core.stream import StreamManager
 from ..core.models import (
     Session,
     SessionCreate,
@@ -17,6 +18,7 @@ from ..core.models import (
     WSMessage,
 )
 from ..core.logging import setup_logging, get_logger
+from .websocket import connection_manager
 
 # Initialize logging
 setup_logging()
@@ -24,8 +26,10 @@ logger = get_logger("api")
 
 # Global state
 store: Optional[SessionStore] = None
-connected_clients: set[WebSocket] = set()
+stream_manager: Optional[StreamManager] = None
+connected_clients: set[WebSocket] = set()  # Legacy clients
 refresh_task: Optional[asyncio.Task] = None
+stream_task: Optional[asyncio.Task] = None
 
 
 async def broadcast(message: dict):
@@ -88,20 +92,40 @@ async def refresh_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global store, refresh_task
+    global store, stream_manager, refresh_task, stream_task
 
     logger.info("Starting CBOS API server")
+
+    # Initialize store
     store = SessionStore()
     store.sync_with_screen()
-    store.refresh_states()
 
-    # Start background refresh task
+    # Initialize stream manager
+    stream_manager = StreamManager()
+
+    # Register stream callback to broadcast to WebSocket clients
+    stream_manager.on_stream(connection_manager.broadcast_stream)
+
+    # Start stream watcher task
+    stream_task = asyncio.create_task(stream_manager.start())
+    logger.info("Stream watcher started")
+
+    # Start legacy background refresh task (for session list sync)
+    # Note: State heuristics are disabled, this just syncs session list
     refresh_task = asyncio.create_task(refresh_loop())
 
     yield
 
     # Cleanup
     logger.info("Shutting down CBOS API server")
+
+    if stream_task:
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
+
     if refresh_task:
         refresh_task.cancel()
         try:
@@ -512,6 +536,121 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         connected_clients.discard(ws)
         logger.info(f"WebSocket client disconnected. Total: {len(connected_clients)}")
+
+
+# ============================================================================
+# Streaming WebSocket
+# ============================================================================
+
+
+@app.websocket("/ws/stream")
+async def stream_endpoint(ws: WebSocket):
+    """
+    WebSocket endpoint for real-time session streaming.
+
+    Protocol:
+    - Client sends: {"type": "subscribe", "sessions": ["INFRA", "AUTH"]} or ["*"] for all
+    - Client sends: {"type": "unsubscribe", "sessions": ["INFRA"]}
+    - Client sends: {"type": "send", "session": "INFRA", "text": "yes"}
+    - Client sends: {"type": "interrupt", "session": "INFRA"}
+    - Server sends: {"type": "stream", "session": "INFRA", "data": "...", "ts": 1234567890.123}
+    - Server sends: {"type": "sessions", "sessions": [...]}
+    - Server sends: {"type": "subscribed", "sessions": ["INFRA", "AUTH"]}
+    """
+    client = await connection_manager.connect(ws)
+    logger.info(f"Stream client connected. Total: {connection_manager.connection_count}")
+
+    try:
+        # Send initial session list
+        store.sync_with_screen()
+        sessions = [s.model_dump(mode="json") for s in store.all()]
+        await ws.send_json({
+            "type": "sessions",
+            "sessions": sessions,
+        })
+
+        # Send available streams (typescript files)
+        if stream_manager:
+            available = stream_manager.get_sessions()
+            await ws.send_json({
+                "type": "available_streams",
+                "sessions": available,
+            })
+
+        # Listen for client messages
+        while True:
+            data = await ws.receive_json()
+            msg_type = data.get("type", "")
+
+            if msg_type == "subscribe":
+                # Subscribe to session streams
+                sessions_to_sub = data.get("sessions", [])
+                subscribed = await connection_manager.subscribe(ws, sessions_to_sub)
+                await ws.send_json({
+                    "type": "subscribed",
+                    "sessions": subscribed,
+                })
+                logger.debug(f"Client subscribed to: {subscribed}")
+
+            elif msg_type == "unsubscribe":
+                # Unsubscribe from session streams
+                sessions_to_unsub = data.get("sessions", [])
+                remaining = await connection_manager.unsubscribe(ws, sessions_to_unsub)
+                await ws.send_json({
+                    "type": "subscribed",
+                    "sessions": remaining,
+                })
+
+            elif msg_type == "send":
+                # Send input to a session
+                session = data.get("session")
+                text = data.get("text")
+                if session and text:
+                    success = store.send_input(session, text)
+                    await ws.send_json({
+                        "type": "send_result",
+                        "session": session,
+                        "success": success,
+                    })
+
+            elif msg_type == "interrupt":
+                # Send interrupt to a session
+                session = data.get("session")
+                if session:
+                    success = store.send_interrupt(session)
+                    await ws.send_json({
+                        "type": "interrupt_result",
+                        "session": session,
+                        "success": success,
+                    })
+
+            elif msg_type == "get_buffer":
+                # Get current buffer for a session
+                session = data.get("session")
+                if session and stream_manager:
+                    buffer = await stream_manager.get_buffer(session)
+                    await ws.send_json({
+                        "type": "buffer",
+                        "session": session,
+                        "data": buffer,
+                    })
+
+            elif msg_type == "list_sessions":
+                # Refresh and send session list
+                store.sync_with_screen()
+                sessions = [s.model_dump(mode="json") for s in store.all()]
+                await ws.send_json({
+                    "type": "sessions",
+                    "sessions": sessions,
+                })
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Stream WebSocket error: {e}")
+    finally:
+        await connection_manager.disconnect(ws)
+        logger.info(f"Stream client disconnected. Total: {connection_manager.connection_count}")
 
 
 def run():

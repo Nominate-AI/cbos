@@ -1,6 +1,9 @@
 """CBOS TUI - Claude Code Session Manager"""
 
+import asyncio
+import json
 import httpx
+import websockets
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
@@ -22,6 +25,10 @@ from rich.panel import Panel
 from ..core.version import get_version_string
 
 API_BASE = "http://127.0.0.1:32205"
+WS_STREAM_URL = "ws://127.0.0.1:32205/ws/stream"
+
+# Maximum buffer size per session (characters)
+MAX_BUFFER_SIZE = 50000
 
 
 # State icons with colors
@@ -267,7 +274,7 @@ class CBOSApp(App):
     ]
 
     TITLE = "CBOS"
-    SUB_TITLE = "Claude Code Session Manager"
+    SUB_TITLE = "Claude Code Session Manager [Streaming]"
 
     def __init__(self) -> None:
         super().__init__()
@@ -275,6 +282,11 @@ class CBOSApp(App):
         self.selected_slug: str | None = None
         self.current_suggestion: dict | None = None
         self.client = httpx.AsyncClient(base_url=API_BASE, timeout=10)
+
+        # Streaming state
+        self._stream_buffers: dict[str, str] = {}  # session -> accumulated content
+        self._ws_task: asyncio.Task | None = None
+        self._ws_connected = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -303,8 +315,96 @@ class CBOSApp(App):
 
     async def on_mount(self) -> None:
         """Initialize the app"""
+        # Start WebSocket streaming connection
+        self._ws_task = asyncio.create_task(self._stream_loop())
+
+        # Also keep HTTP polling for session list updates (fallback)
         self.refresh_sessions()
-        self.set_interval(3, self.refresh_sessions)
+        self.set_interval(5, self.refresh_sessions)
+
+    async def _stream_loop(self) -> None:
+        """WebSocket streaming connection loop with reconnection"""
+        while True:
+            try:
+                await self._connect_stream()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._ws_connected = False
+                self.notify(f"Stream disconnected: {e}", severity="warning", timeout=3)
+                # Wait before reconnecting
+                await asyncio.sleep(2)
+
+    async def _connect_stream(self) -> None:
+        """Connect to WebSocket stream and handle messages"""
+        try:
+            async with websockets.connect(WS_STREAM_URL) as ws:
+                self._ws_connected = True
+                self.notify("Stream connected", timeout=2)
+
+                # Subscribe to all sessions
+                await ws.send(json.dumps({
+                    "type": "subscribe",
+                    "sessions": ["*"]
+                }))
+
+                # Handle incoming messages
+                async for message in ws:
+                    try:
+                        data = json.loads(message)
+                        await self._handle_stream_message(data)
+                    except json.JSONDecodeError:
+                        pass
+
+        except websockets.exceptions.ConnectionClosed:
+            self._ws_connected = False
+        except Exception as e:
+            self._ws_connected = False
+            raise
+
+    async def _handle_stream_message(self, data: dict) -> None:
+        """Handle a message from the WebSocket stream"""
+        msg_type = data.get("type", "")
+
+        if msg_type == "stream":
+            # Real-time stream data
+            session = data.get("session", "")
+            content = data.get("data", "")
+
+            if session and content:
+                # Append to buffer
+                current = self._stream_buffers.get(session, "")
+                new_buffer = current + content
+
+                # Trim to max size
+                if len(new_buffer) > MAX_BUFFER_SIZE:
+                    new_buffer = new_buffer[-MAX_BUFFER_SIZE:]
+
+                self._stream_buffers[session] = new_buffer
+
+                # Update display if this is the selected session
+                if session == self.selected_slug:
+                    self._update_buffer_from_stream(session)
+
+        elif msg_type == "sessions":
+            # Session list update
+            sessions = data.get("sessions", [])
+            if sessions:
+                self._update_session_list(sessions)
+
+        elif msg_type == "subscribed":
+            # Subscription confirmation
+            subscribed = data.get("sessions", [])
+            self.notify(f"Subscribed to: {subscribed}", timeout=2)
+
+    def _update_buffer_from_stream(self, session: str) -> None:
+        """Update the buffer view from streaming content"""
+        buffer = self._stream_buffers.get(session, "")
+
+        buffer_view = self.query_one("#buffer-view", BufferView)
+        buffer_view.buffer = buffer
+        # No question extraction in streaming mode
+        buffer_view.question = ""
 
     @work(exclusive=True, thread=True)
     def refresh_sessions(self) -> None:
@@ -375,11 +475,28 @@ class CBOSApp(App):
         """Handle session selection"""
         if isinstance(event.item, SessionItem):
             self.selected_slug = event.item.session.get("slug")
-            self.load_buffer()
+
+            # First, show streaming buffer if available
+            if self.selected_slug in self._stream_buffers:
+                self._update_buffer_from_stream(self.selected_slug)
+
+                # Update header
+                session = event.item.session
+                state = session.get("state", "unknown")
+                icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
+                header = self.query_one("#content-header", Static)
+                header.update(
+                    Text.from_markup(
+                        f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/] [dim](streaming)[/]"
+                    )
+                )
+            else:
+                # Fallback to HTTP buffer load
+                self.load_buffer()
 
     @work(exclusive=True, thread=True)
     def load_buffer(self) -> None:
-        """Load buffer for selected session"""
+        """Load buffer for selected session (fallback when not streaming)"""
         if not self.selected_slug:
             return
 

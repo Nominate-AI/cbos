@@ -16,6 +16,9 @@ dependencies = [
     "httpx>=0.24",
     "textual>=0.40",
     "rich>=13.0",
+    "watchfiles>=0.21",
+    "aiofiles>=23.0",
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
