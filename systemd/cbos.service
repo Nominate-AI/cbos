@@ -7,7 +7,8 @@ Type=simple
 User=bisenbek
 Group=bisenbek
 WorkingDirectory=/home/bisenbek/projects/nominate/cbos
-Environment="PATH=/home/bisenbek/.pyenv/versions/nominates/bin:/usr/local/bin:/usr/bin:/bin"
+# PATH includes ~/.local/bin for claude CLI
+Environment="PATH=/home/bisenbek/.local/bin:/home/bisenbek/.pyenv/versions/nominates/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="CBOS_LOG_LEVEL=INFO"
 ExecStart=/home/bisenbek/.pyenv/versions/nominates/bin/uvicorn cbos.api.main:app --host 127.0.0.1 --port 32205
 Restart=always
@@ -16,11 +17,9 @@ SyslogIdentifier=cbos
 StandardOutput=journal
 StandardError=journal
 
-# Security hardening (PrivateTmp disabled - screen hardcopy needs shared /tmp)
+# Minimal security hardening
+# Note: Removed ProtectHome=read-only as it interferes with streaming file watching
 NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/bisenbek/projects/nominate/cbos /home/bisenbek/.cbos /home/bisenbek/claude_logs /tmp /run/screen
 
 [Install]
 WantedBy=multi-user.target
