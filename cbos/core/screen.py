@@ -33,6 +33,17 @@ class ScreenManager:
         r">\u2588$",  # Prompt with cursor block
     ]
 
+    # Patterns for Claude Code question/choice dialogs (also WAITING state)
+    QUESTION_DIALOG_PATTERNS = [
+        r"Esc to cancel",  # Choice dialog footer
+        r"^\s*[❯o]\s*\d+\.\s+",  # Selection cursor on numbered option (❯ or 'o' in hardcopy)
+        r"^\s*\d+\.\s+(Yes|No|Skip|Cancel|Continue|Allow)",  # Numbered Yes/No options
+        r"Do you want to\s",  # Common question pattern
+        r"Would you like to\s",  # Common question pattern
+        r"Should I\s",  # Common question pattern
+        r"^\s*Type here to tell Claude",  # Custom input option
+    ]
+
     THINKING_PATTERNS = [
         r"[●◐◑◒◓]",  # Spinner characters
         r"Thinking",
@@ -270,17 +281,28 @@ class ScreenManager:
                     return SessionState.WAITING, question
 
             # Also check if line is just ">" with possible cursor block or special chars
-            # 0xa0 = non-breaking space, \u2588 = █ cursor block
-            if line_stripped in (">", "> ", ">\u2588", ">█", ">\xa0", "> \xa0"):
+            # 0xa0 = non-breaking space, \u2588 = █ cursor block, \ufffd = replacement char
+            if line_stripped in (">", "> ", ">\u2588", ">█", ">\xa0", "> \xa0", ">\ufffd", "> \ufffd"):
                 question = self._extract_last_question(lines)
                 logger.debug(f"{log_prefix}Prompt char detected in recent lines -> WAITING")
                 return SessionState.WAITING, question
-            # Also check if line starts with ">" and rest is whitespace (including \xa0)
+            # Also check if line starts with ">" and rest is whitespace or special chars
             if line_stripped.startswith(">"):
-                rest = line_stripped[1:].replace("\xa0", " ").strip()
+                # Remove non-breaking space, replacement char, and other common terminal artifacts
+                rest = line_stripped[1:].replace("\xa0", "").replace("\ufffd", "").strip()
                 if len(rest) == 0:
                     question = self._extract_last_question(lines)
-                    logger.debug(f"{log_prefix}Prompt '>' with whitespace detected -> WAITING")
+                    logger.debug(f"{log_prefix}Prompt '>' with special chars detected -> WAITING")
+                    return SessionState.WAITING, question
+
+        # Check for question/choice dialog (also WAITING state)
+        # Check last 10 lines for dialog patterns
+        dialog_check_lines = lines[-10:] if len(lines) >= 10 else lines
+        for line in dialog_check_lines:
+            for pattern in self.QUESTION_DIALOG_PATTERNS:
+                if re.search(pattern, line):
+                    question = self._extract_question_dialog(lines)
+                    logger.debug(f"{log_prefix}Question dialog pattern '{pattern}' matched -> WAITING")
                     return SessionState.WAITING, question
 
         # Check for thinking state
@@ -339,6 +361,34 @@ class ScreenManager:
                 break
 
         return "\n".join(question_lines) if question_lines else None
+
+    def _extract_question_dialog(
+        self, lines: list[str], max_lines: int = 15
+    ) -> Optional[str]:
+        """
+        Extract the question from a Claude Code choice dialog.
+
+        Looks for the question text before the numbered options.
+        """
+        # Find the question line (ends with ?)
+        for i, line in enumerate(reversed(lines[-max_lines:])):
+            stripped = line.strip()
+            # Look for question ending with ?
+            if stripped.endswith("?"):
+                return stripped
+            # Also check for "Do you want to" pattern without ?
+            if re.search(r"(Do you want to|Would you like to|Should I)\s", stripped):
+                return stripped
+
+        # Fallback: return the first non-empty line that's not an option
+        for line in lines[-max_lines:]:
+            stripped = line.strip()
+            if stripped and not re.match(r"^\s*\d+\.", stripped) and "Esc to" not in stripped:
+                # Skip lines that look like options or separators
+                if not re.match(r"^[Lo\s❯]+$", stripped):  # L=separator, o=selection
+                    return stripped
+
+        return None
 
     def get_log_path(self, slug: str) -> Path:
         """Get the log file path for a session"""
