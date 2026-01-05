@@ -1,6 +1,7 @@
 """FastAPI server for CBOS"""
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -90,6 +91,23 @@ async def refresh_loop():
             logger.error(f"Error in refresh loop: {e}")
 
 
+def cleanup_stale_typescript_files(active_slugs: set[str]) -> None:
+    """Remove typescript files for sessions that no longer exist"""
+    from ..core.config import get_config
+    config = get_config()
+    stream_dir = config.stream.stream_dir
+
+    for ts_file in stream_dir.glob("*.typescript"):
+        slug = ts_file.stem
+        if slug not in active_slugs:
+            # Remove stale typescript and timing files
+            ts_file.unlink()
+            timing_file = stream_dir / f"{slug}.timing"
+            if timing_file.exists():
+                timing_file.unlink()
+            logger.info(f"Cleaned up stale typescript files for: {slug}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
@@ -100,6 +118,10 @@ async def lifespan(app: FastAPI):
     # Initialize store
     store = SessionStore()
     store.sync_with_screen()
+
+    # Clean up stale typescript files from dead sessions
+    active_slugs = {s.slug for s in store.all()}
+    cleanup_stale_typescript_files(active_slugs)
 
     # Initialize stream manager
     stream_manager = StreamManager()
@@ -592,6 +614,32 @@ async def stream_endpoint(ws: WebSocket):
                     "sessions": subscribed,
                 })
                 logger.debug(f"Client subscribed to: {subscribed}")
+
+                # Send initial snapshot for each subscribed session
+                if stream_manager:
+                    # Get active session slugs from store
+                    active_slugs = {s.slug for s in store.all()}
+
+                    if "*" in subscribed:
+                        # Wildcard: send snapshots only for ACTIVE sessions with typescript files
+                        available = stream_manager.get_sessions()
+                        sessions_to_snapshot = [s for s in available if s in active_slugs]
+                    else:
+                        # Specific sessions - only if active
+                        sessions_to_snapshot = [s for s in subscribed if s != "*" and s in active_slugs]
+
+                    for session_slug in sessions_to_snapshot:
+                        # Get current buffer content
+                        buffer = await stream_manager.get_buffer(session_slug, max_bytes=100000)
+                        if buffer:
+                            await ws.send_json({
+                                "type": "stream",
+                                "session": session_slug,
+                                "data": buffer,
+                                "ts": time.time(),
+                                "snapshot": True,
+                            })
+                            logger.debug(f"Sent initial snapshot for {session_slug}: {len(buffer)} bytes")
 
             elif msg_type == "unsubscribe":
                 # Unsubscribe from session streams

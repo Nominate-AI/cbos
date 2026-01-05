@@ -45,7 +45,38 @@ pip install -e .
 mkdir -p ~/claude_streams ~/claude_logs
 ```
 
-### 3. Set up systemd service (recommended)
+### 3. Configuration (optional)
+
+CBOS can be configured via environment variables or a `~/.cbos/.env` file.
+
+```bash
+# Copy example configuration
+cp .env.example ~/.cbos/.env
+
+# Edit configuration
+vim ~/.cbos/.env
+```
+
+**Key configuration options:**
+
+```bash
+# Claude command path (default: "claude")
+# Use full path if Claude is not in your PATH
+CBOS_CLAUDE_COMMAND=/home/user/.local/bin/claude
+
+# Environment variables to pass to Claude
+# Example: Set thinking token limit
+CBOS_CLAUDE_ENV_VARS=MAX_THINKING_TOKENS=32000
+
+# API settings
+CBOS_API_HOST=127.0.0.1
+CBOS_API_PORT=32205
+
+# Stream directory for typescript files
+CBOS_STREAM_STREAM_DIR=/home/user/claude_streams
+```
+
+### 4. Set up systemd service (recommended)
 
 ```bash
 # Copy service file
@@ -104,10 +135,17 @@ CBOS automatically:
 
 **What runs under the hood:**
 ```bash
+# With default configuration (CBOS_CLAUDE_COMMAND=claude)
 screen -dmS MYPROJECT -L -Logfile ~/claude_logs/MYPROJECT.log bash -c \
   "script -f --timing=~/claude_streams/MYPROJECT.timing \
    ~/claude_streams/MYPROJECT.typescript \
    -c 'cd /home/user/myproject && NO_COLOR=1 claude'"
+
+# With custom configuration (e.g., CBOS_CLAUDE_ENV_VARS=MAX_THINKING_TOKENS=32000)
+screen -dmS MYPROJECT -L -Logfile ~/claude_logs/MYPROJECT.log bash -c \
+  "script -f --timing=~/claude_streams/MYPROJECT.timing \
+   ~/claude_streams/MYPROJECT.typescript \
+   -c 'cd /home/user/myproject && MAX_THINKING_TOKENS=32000 NO_COLOR=1 /path/to/claude'"
 ```
 
 **Note:** Existing screen sessions started manually (not through CBOS) will appear in the list but won't stream - they weren't wrapped with `script -f`. Kill and recreate them through CBOS to enable streaming.

@@ -130,19 +130,25 @@ class ScreenManager:
 
         logfile = self.log_dir / f"{slug}.log"
 
+        # Get config for claude command
+        config = get_config()
+
         # Build the claude command
-        claude_cmd = "claude"
+        claude_cmd = config.claude_command
         if resume:
             claude_cmd += " --resume"
 
         # Environment setup
-        env_setup = ""
+        env_vars = []
+        if config.claude_env_vars:
+            env_vars.append(config.claude_env_vars)
         if no_color:
-            env_setup = "NO_COLOR=1 "
+            env_vars.append("NO_COLOR=1")
+
+        env_setup = " ".join(env_vars) + " " if env_vars else ""
 
         if streaming:
             # Streaming mode: wrap claude in script -f for real-time capture
-            config = get_config()
             stream_dir = config.stream.stream_dir
             stream_dir.mkdir(parents=True, exist_ok=True)
 

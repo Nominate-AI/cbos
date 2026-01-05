@@ -100,8 +100,8 @@ class StreamManager:
             async for changes in watchfiles.awatch(
                 self.stream_dir,
                 watch_filter=lambda change, path: path.endswith('.typescript'),
-                poll_delay_ms=100,  # Check every 100ms for low latency
-                debounce=500,  # Reduce from default 1600ms for faster response
+                poll_delay_ms=200,  # Check every 200ms
+                debounce=1000,  # Batch keystroke updates (1 second debounce)
                 force_polling=True,  # More reliable under systemd than inotify
             ):
                 logger.debug(f"File changes detected: {len(changes)}")
@@ -156,6 +156,16 @@ class StreamManager:
                 text = new_data.decode('utf-8', errors='replace')
             except Exception:
                 text = new_data.decode('latin-1', errors='replace')
+
+            # Filter out small deltas that are just keystroke noise
+            # Only send if there's meaningful content (newlines, or substantial text)
+            stripped = text.strip()
+            has_newline = '\n' in text
+            meaningful_size = len(stripped) > 50  # Skip tiny updates
+
+            if not (has_newline or meaningful_size):
+                logger.debug(f"[{slug}] Skipping small delta: {len(text)} chars")
+                return
 
             event = StreamEvent(session=slug, data=text)
             logger.debug(f"[{slug}] Stream event: {len(text)} chars")

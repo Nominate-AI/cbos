@@ -333,7 +333,7 @@ class BufferView(ScrollableContainer):
     question = reactive("")
 
     def compose(self) -> ComposeResult:
-        yield Static(id="buffer-content")
+        yield Static(id="buffer-content", markup=False)
         yield Static(id="question-highlight")
 
     def watch_buffer(self, value: str) -> None:
@@ -341,6 +341,8 @@ class BufferView(ScrollableContainer):
         # Show last 100 lines, don't strip trailing whitespace
         lines = value.split("\n")[-100:]
         content.update("\n".join(lines))
+        # Auto-scroll to bottom
+        self.scroll_end(animate=False)
 
     def watch_question(self, value: str) -> None:
         highlight = self.query_one("#question-highlight", Static)
@@ -476,13 +478,17 @@ class CBOSApp(App):
 
     #input-area {
         dock: bottom;
-        height: 5;
-        padding: 1;
+        height: auto;
+        padding: 0 1;
         background: $surface-darken-1;
     }
 
     #input-field {
-        margin-top: 1;
+        height: 3;
+    }
+
+    #input-field:focus {
+        border: tall $accent;
     }
 
     #suggestion-panel {
@@ -503,9 +509,9 @@ class CBOSApp(App):
         Binding("c", "create", "Create"),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "suggest", "AI Suggest"),
-        Binding("enter", "focus_input", "Send", show=True),
-        Binding("i", "focus_input", "Input", show=False),
-        Binding("escape", "focus_list", "Back", show=False),
+        Binding("i", "focus_input", "Input", show=True),
+        Binding("enter", "focus_input", "Input", show=False),
+        Binding("escape", "focus_list", "Esc=cancel", show=True),
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("a", "attach", "Attach"),
     ]
@@ -524,6 +530,7 @@ class CBOSApp(App):
         self._ws_task: asyncio.Task | None = None
         self._ws_connected = False
         self._ws: websockets.WebSocketClientProtocol | None = None  # WebSocket connection
+        self._pending_select_slug: str | None = None  # Session to auto-select after creation
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -541,9 +548,8 @@ class CBOSApp(App):
                 yield SuggestionPanel(id="suggestion-panel")
                 yield BufferView(id="buffer-view")
                 with Vertical(id="input-area"):
-                    yield Label("Response (Enter to send, Esc to cancel):")
                     yield Input(
-                        placeholder="Type your response...",
+                        placeholder="Type response here... (Enter=send, Esc=cancel)",
                         id="input-field",
                     )
 
@@ -610,14 +616,19 @@ class CBOSApp(App):
             # Real-time stream data
             session = data.get("session", "")
             content = data.get("data", "")
+            is_snapshot = data.get("snapshot", False)
 
             if session and content:
                 # Strip ANSI escape codes for clean display
                 content = strip_ansi(content)
 
-                # Append to buffer
-                current = self._stream_buffers.get(session, "")
-                new_buffer = current + content
+                if is_snapshot:
+                    # Snapshot: replace buffer entirely
+                    new_buffer = content
+                else:
+                    # Incremental: append to buffer
+                    current = self._stream_buffers.get(session, "")
+                    new_buffer = current + content
 
                 # Trim to max size
                 if len(new_buffer) > MAX_BUFFER_SIZE:
@@ -664,6 +675,17 @@ class CBOSApp(App):
         old_slugs = [s.get("slug") for s in self.sessions]
         new_slugs = [s.get("slug") for s in new_sessions]
 
+        # Check for removed sessions (cleanup)
+        removed_slugs = set(old_slugs) - set(new_slugs)
+        for slug in removed_slugs:
+            # Clear buffer for removed session
+            self._stream_buffers.pop(slug, None)
+            # Clear selection if this was the selected session
+            if self.selected_slug == slug:
+                self.selected_slug = None
+                self.query_one("#content-header", Static).update("Select a session")
+                self.query_one("#buffer-view", BufferView).buffer = ""
+
         self.sessions = new_sessions
 
         if old_slugs != new_slugs:
@@ -674,8 +696,17 @@ class CBOSApp(App):
             for s in self.sessions:
                 session_list.append(SessionItem(s))
 
-            # Restore highlight
-            if current_index is not None and 0 <= current_index < len(self.sessions):
+            # Check if we need to auto-select a pending session
+            if self._pending_select_slug:
+                for i, s in enumerate(self.sessions):
+                    if s.get("slug") == self._pending_select_slug:
+                        session_list.index = i
+                        # Trigger selection
+                        self._select_session_by_slug(self._pending_select_slug)
+                        self._pending_select_slug = None
+                        break
+            elif current_index is not None and 0 <= current_index < len(self.sessions):
+                # Restore highlight
                 session_list.index = current_index
         else:
             # Same structure, update items in place
@@ -694,24 +725,38 @@ class CBOSApp(App):
                     static = item.query_one(Static)
                     static.update(text)
 
+    def _select_session_by_slug(self, slug: str) -> None:
+        """Select a session by its slug and update the UI"""
+        # Find the session data
+        session = None
+        for s in self.sessions:
+            if s.get("slug") == slug:
+                session = s
+                break
+
+        if not session:
+            return
+
+        self.selected_slug = slug
+        state = session.get("state", "unknown")
+        icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
+
+        # Update header
+        header = self.query_one("#content-header", Static)
+        header.update(
+            Text.from_markup(
+                f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
+            )
+        )
+
+        # Show streaming buffer (may be empty if session just started)
+        self._update_buffer_from_stream(self.selected_slug)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle session selection"""
         if isinstance(event.item, SessionItem):
-            self.selected_slug = event.item.session.get("slug")
-            session = event.item.session
-            state = session.get("state", "unknown")
-            icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
-
-            # Update header
-            header = self.query_one("#content-header", Static)
-            header.update(
-                Text.from_markup(
-                    f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
-                )
-            )
-
-            # Show streaming buffer (may be empty if session just started)
-            self._update_buffer_from_stream(self.selected_slug)
+            slug = event.item.session.get("slug")
+            self._select_session_by_slug(slug)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission"""
@@ -978,6 +1023,9 @@ class CBOSApp(App):
                     f"Created session: {slug}",
                     timeout=3
                 )
+
+                # Store slug to auto-select after refresh
+                self._pending_select_slug = slug
 
                 # Reconnect WebSocket to get updated session list
                 self.call_from_thread(self.action_refresh)

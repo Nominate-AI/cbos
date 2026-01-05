@@ -199,10 +199,24 @@ class SessionStore:
         return session
 
     def delete(self, slug: str) -> bool:
-        """Delete a session (kills the screen session)"""
+        """Delete a session (kills the screen session and cleans up files)"""
         if slug in self._sessions:
             self.screen.kill(slug)
             del self._sessions[slug]
+
+            # Clean up typescript files
+            from .config import get_config
+            config = get_config()
+            typescript_file = config.stream.stream_dir / f"{slug}.typescript"
+            timing_file = config.stream.stream_dir / f"{slug}.timing"
+
+            if typescript_file.exists():
+                typescript_file.unlink()
+                logger.debug(f"Deleted typescript file: {typescript_file}")
+            if timing_file.exists():
+                timing_file.unlink()
+                logger.debug(f"Deleted timing file: {timing_file}")
+
             return True
         return False
 

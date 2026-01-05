@@ -26,6 +26,17 @@ pytest tests/ -v
 pip install -e ".[dev]"
 ```
 
+## Configuration
+
+CBOS can be configured via `~/.cbos/.env` file. Key options:
+
+- `CBOS_CLAUDE_COMMAND` - Path to Claude executable (default: "claude")
+- `CBOS_CLAUDE_ENV_VARS` - Space-separated environment variables to pass to Claude (e.g., "MAX_THINKING_TOKENS=32000")
+- `CBOS_API_HOST` / `CBOS_API_PORT` - API server settings
+- `CBOS_STREAM_STREAM_DIR` - Directory for typescript files
+
+See `.env.example` for all options.
+
 ## Architecture
 
 ```

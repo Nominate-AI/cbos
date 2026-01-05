@@ -1,7 +1,7 @@
 """CBOS Configuration"""
 
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class StreamConfig(BaseSettings):
@@ -30,11 +30,19 @@ class CBOSConfig(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Claude command configuration
+    claude_command: str = "claude"  # Can be full path like /home/user/.local/bin/claude
+    claude_env_vars: str = ""  # Space-separated KEY=VALUE pairs, e.g., "MAX_THINKING_TOKENS=32000 NO_COLOR=1"
+
     # Stream settings
     stream: StreamConfig = StreamConfig()
 
-    class Config:
-        env_prefix = "CBOS_"
+    model_config = SettingsConfigDict(
+        env_prefix="CBOS_",
+        env_file=str(Path.home() / ".cbos" / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 # Global config instance
