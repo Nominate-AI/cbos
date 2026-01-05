@@ -2,13 +2,18 @@
 
 import asyncio
 import json
+import os
 import re
+import subprocess
+from pathlib import Path
+
 import httpx
 import websockets
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import (
     Header,
     Footer,
@@ -18,12 +23,241 @@ from textual.widgets import (
     Input,
     Label,
     Rule,
+    Button,
 )
 from textual import work
 from rich.text import Text
 from rich.panel import Panel
 
 from ..core.version import get_version_string
+
+
+def discover_claude_projects(active_paths: set[str]) -> list[dict]:
+    """
+    Discover Claude projects by finding CLAUDE.md files.
+
+    Returns list of dicts with 'path', 'name', 'mtime' sorted by mtime desc.
+    Filters out paths that are already active sessions.
+    """
+    home = Path.home()
+    projects = []
+
+    try:
+        # Find all CLAUDE.md files
+        result = subprocess.run(
+            ["find", str(home), "-type", "f", "-name", "CLAUDE.md",
+             "-not", "-path", "*/.*"],  # Exclude hidden directories
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+
+            claude_md = Path(line)
+            project_dir = claude_md.parent
+            project_path = str(project_dir)
+
+            # Skip if already an active session
+            if project_path in active_paths:
+                continue
+
+            # Get modification time
+            try:
+                mtime = claude_md.stat().st_mtime
+            except OSError:
+                continue
+
+            # Generate session name from git config
+            session_name = generate_session_name(project_dir)
+
+            projects.append({
+                "path": project_path,
+                "name": session_name,
+                "mtime": mtime,
+                "display": f"{session_name} ({project_path})",
+            })
+
+        # Sort by mtime descending (most recent first)
+        projects.sort(key=lambda x: x["mtime"], reverse=True)
+
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        pass
+
+    return projects
+
+
+def generate_session_name(project_dir: Path) -> str:
+    """
+    Generate session name from git remote origin URL.
+    Falls back to directory name if git config not available.
+    """
+    git_config = project_dir / ".git" / "config"
+
+    if git_config.exists():
+        try:
+            content = git_config.read_text()
+            for line in content.split("\n"):
+                if "url =" in line:
+                    # Extract URL and get repo name
+                    url = line.split("=")[-1].strip()
+                    # Handle various URL formats:
+                    # git@github.com:user/repo.git
+                    # https://github.com/user/repo.git
+                    repo_name = url.split("/")[-1]
+                    if repo_name.endswith(".git"):
+                        repo_name = repo_name[:-4]
+                    return repo_name.upper()
+        except Exception:
+            pass
+
+    # Fallback to directory name
+    return project_dir.name.upper()
+
+
+class ProjectItem(ListItem):
+    """A project in the selection list"""
+
+    def __init__(self, project: dict) -> None:
+        super().__init__()
+        self.project = project
+
+    def compose(self) -> ComposeResult:
+        text = Text()
+        text.append(self.project["name"], style="bold cyan")
+        text.append("\n")
+        text.append(self.project["path"], style="dim")
+        yield Static(text)
+
+
+class CreateSessionScreen(ModalScreen[dict | None]):
+    """Modal screen for selecting a project to create a session"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("n", "next_page", "Next"),
+        Binding("p", "prev_page", "Prev"),
+    ]
+
+    CSS = """
+    CreateSessionScreen {
+        align: center middle;
+    }
+
+    #create-dialog {
+        width: 80%;
+        max-width: 100;
+        height: 80%;
+        max-height: 30;
+        border: solid $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #create-title {
+        text-align: center;
+        text-style: bold;
+        padding-bottom: 1;
+    }
+
+    #project-list {
+        height: 1fr;
+    }
+
+    #project-list > ListItem {
+        padding: 0 1;
+    }
+
+    #project-list > ListItem.--highlight {
+        background: $accent;
+    }
+
+    #page-info {
+        text-align: center;
+        padding-top: 1;
+        color: $text-muted;
+    }
+
+    #create-footer {
+        text-align: center;
+        padding-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, projects: list[dict], page_size: int = 10):
+        super().__init__()
+        self.all_projects = projects
+        self.page_size = page_size
+        self.current_page = 0
+        self.total_pages = max(1, (len(projects) + page_size - 1) // page_size)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="create-dialog"):
+            yield Label("Create New Session", id="create-title")
+            yield Rule()
+            yield ListView(id="project-list")
+            yield Static(id="page-info")
+            yield Static("Enter=Select │ n/p=Page │ Esc=Cancel", id="create-footer")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        """Refresh the project list for current page"""
+        project_list = self.query_one("#project-list", ListView)
+        project_list.clear()
+
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        page_projects = self.all_projects[start:end]
+
+        for project in page_projects:
+            project_list.append(ProjectItem(project))
+
+        # Update page info
+        page_info = self.query_one("#page-info", Static)
+        if self.total_pages > 1:
+            page_info.update(f"Page {self.current_page + 1}/{self.total_pages} ({len(self.all_projects)} projects)")
+        else:
+            page_info.update(f"{len(self.all_projects)} projects found")
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle project selection"""
+        if isinstance(event.item, ProjectItem):
+            self.dismiss(event.item.project)
+
+    def action_cancel(self) -> None:
+        """Cancel and close modal"""
+        self.dismiss(None)
+
+    def action_next_page(self) -> None:
+        """Go to next page"""
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self._refresh_list()
+
+    def action_prev_page(self) -> None:
+        """Go to previous page"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self._refresh_list()
+
+    def action_cursor_down(self) -> None:
+        """Move cursor down in list"""
+        project_list = self.query_one("#project-list", ListView)
+        project_list.action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move cursor up in list"""
+        project_list = self.query_one("#project-list", ListView)
+        project_list.action_cursor_up()
 
 API_BASE = "http://127.0.0.1:32205"
 WS_STREAM_URL = "ws://127.0.0.1:32205/ws/stream"
@@ -266,10 +500,9 @@ class CBOSApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("c", "create", "Create"),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "suggest", "AI Suggest"),
-        Binding("p", "priority", "Priority"),
-        Binding("x", "related", "Related"),
         Binding("enter", "focus_input", "Send", show=True),
         Binding("i", "focus_input", "Input", show=False),
         Binding("escape", "focus_list", "Back", show=False),
@@ -678,6 +911,95 @@ class CBOSApp(App):
 
         except Exception as e:
             self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+
+    def action_create(self) -> None:
+        """Open create session dialog"""
+        self.notify("Discovering Claude projects...", timeout=2)
+
+        # Get active session paths to filter out
+        active_paths = set()
+        for session in self.sessions:
+            path = session.get("path", "")
+            if path:
+                active_paths.add(path)
+
+        # Discover projects in background thread
+        self._discover_and_show_create_dialog(active_paths)
+
+    @work(thread=True)
+    def _discover_and_show_create_dialog(self, active_paths: set[str]) -> None:
+        """Discover projects and show create dialog"""
+        projects = discover_claude_projects(active_paths)
+
+        if not projects:
+            self.call_from_thread(
+                self.notify,
+                "No Claude projects found (looking for CLAUDE.md files)",
+                severity="warning",
+                timeout=5
+            )
+            return
+
+        # Show the modal on main thread
+        self.call_from_thread(self._show_create_dialog, projects)
+
+    def _show_create_dialog(self, projects: list[dict]) -> None:
+        """Show the create session dialog"""
+        def handle_result(result: dict | None) -> None:
+            if result:
+                self._create_session(result)
+
+        self.push_screen(CreateSessionScreen(projects), handle_result)
+
+    @work(thread=True)
+    def _create_session(self, project: dict) -> None:
+        """Create a new session via API"""
+        import httpx as sync_httpx
+
+        slug = project["name"]
+        path = project["path"]
+
+        self.call_from_thread(
+            self.notify,
+            f"Creating session {slug}...",
+            timeout=2
+        )
+
+        try:
+            with sync_httpx.Client(base_url=API_BASE, timeout=30) as client:
+                resp = client.post(
+                    "/sessions",
+                    json={"slug": slug, "path": path}
+                )
+                resp.raise_for_status()
+
+                self.call_from_thread(
+                    self.notify,
+                    f"Created session: {slug}",
+                    timeout=3
+                )
+
+                # Reconnect WebSocket to get updated session list
+                self.call_from_thread(self.action_refresh)
+
+        except sync_httpx.HTTPStatusError as e:
+            detail = "Unknown error"
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            self.call_from_thread(
+                self.notify,
+                f"Failed to create session: {detail}",
+                severity="error",
+                timeout=5
+            )
+        except Exception as e:
+            self.call_from_thread(
+                self.notify,
+                f"Error: {e}",
+                severity="error"
+            )
 
 
 def main() -> None:
