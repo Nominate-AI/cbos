@@ -243,17 +243,32 @@ class ScreenManager:
 
         Args:
             slug: Session name
-            text: Text to send (newline will be appended)
+            text: Text to send (carriage return will be sent after to submit)
 
         Returns:
             True if successful
         """
+        import time
+
         # The 'stuff' command sends literal characters
         # We need to escape single quotes for the shell
         escaped = text.replace("\\", "\\\\").replace("'", "'\\''")
 
+        # Send text first
         result = subprocess.run(
-            ["screen", "-S", slug, "-X", "stuff", f"{escaped}\n"],
+            ["screen", "-S", slug, "-X", "stuff", escaped],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return False
+
+        # Small delay to let TUI process text
+        time.sleep(0.1)
+
+        # Send carriage return to submit (Enter key sends CR, not LF)
+        # Claude Code's TUI expects CR to submit input
+        result = subprocess.run(
+            ["screen", "-S", slug, "-X", "stuff", "\r"],
             capture_output=True,
         )
         return result.returncode == 0
