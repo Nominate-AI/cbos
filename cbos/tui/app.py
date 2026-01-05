@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import httpx
 import websockets
 from textual.app import App, ComposeResult
@@ -29,6 +30,27 @@ WS_STREAM_URL = "ws://127.0.0.1:32205/ws/stream"
 
 # Maximum buffer size per session (characters)
 MAX_BUFFER_SIZE = 50000
+
+# ANSI escape code pattern for stripping terminal sequences
+ANSI_ESCAPE_PATTERN = re.compile(r'''
+    \x1b  # ESC character
+    (?:   # Non-capturing group for different escape types
+        \[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]  # CSI sequences (colors, cursor, etc.)
+        |\].*?(?:\x07|\x1b\\)                   # OSC sequences (title, etc.)
+        |[PX^_].*?\x1b\\                        # DCS, SOS, PM, APC sequences
+        |\([\x20-\x7e]                          # Character set selection
+        |[\x20-\x2f]*[\x30-\x7e]                # Other escape sequences
+    )
+''', re.VERBOSE)
+
+
+def strip_ansi(text: str) -> str:
+    """Strip ANSI escape codes from text"""
+    # Remove ANSI escape sequences
+    text = ANSI_ESCAPE_PATTERN.sub('', text)
+    # Remove other control characters except newline, tab, carriage return
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return text
 
 
 # State icons with colors
@@ -146,13 +168,32 @@ class StatusLegend(Static):
         yield Static(text)
 
 
-class VersionBar(Static):
-    """Version info bar at bottom of screen"""
+class StatusBar(Static):
+    """Status bar showing version and connection state"""
+
+    ws_connected = reactive(False)
 
     def compose(self) -> ComposeResult:
+        yield Static(id="status-text")
+
+    def watch_ws_connected(self, connected: bool) -> None:
+        self._update_status()
+
+    def on_mount(self) -> None:
+        self._update_status()
+
+    def _update_status(self) -> None:
         text = Text()
+        if self.ws_connected:
+            text.append("● ", style="bold green")
+            text.append("streaming ", style="dim green")
+        else:
+            text.append("○ ", style="dim red")
+            text.append("disconnected ", style="dim red")
+        text.append("│ ", style="dim")
         text.append(get_version_string(), style="dim")
-        yield Static(text, id="version-text")
+        status = self.query_one("#status-text", Static)
+        status.update(text)
 
 
 class CBOSApp(App):
@@ -247,7 +288,7 @@ class CBOSApp(App):
         height: auto;
     }
 
-    #version-bar {
+    #status-bar {
         dock: bottom;
         height: 1;
         background: $surface-darken-2;
@@ -255,7 +296,7 @@ class CBOSApp(App):
         padding: 0 1;
     }
 
-    #version-text {
+    #status-text {
         text-align: right;
     }
     """
@@ -281,12 +322,12 @@ class CBOSApp(App):
         self.sessions: list[dict] = []
         self.selected_slug: str | None = None
         self.current_suggestion: dict | None = None
-        self.client = httpx.AsyncClient(base_url=API_BASE, timeout=10)
 
         # Streaming state
         self._stream_buffers: dict[str, str] = {}  # session -> accumulated content
         self._ws_task: asyncio.Task | None = None
         self._ws_connected = False
+        self._ws: websockets.WebSocketClientProtocol | None = None  # WebSocket connection
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -311,16 +352,13 @@ class CBOSApp(App):
                     )
 
         yield Footer()
-        yield VersionBar(id="version-bar")
+        yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
         """Initialize the app"""
         # Start WebSocket streaming connection
         self._ws_task = asyncio.create_task(self._stream_loop())
-
-        # Also keep HTTP polling for session list updates (fallback)
-        self.refresh_sessions()
-        self.set_interval(5, self.refresh_sessions)
+        # Session list comes from WebSocket on connect, no HTTP polling needed
 
     async def _stream_loop(self) -> None:
         """WebSocket streaming connection loop with reconnection"""
@@ -331,6 +369,7 @@ class CBOSApp(App):
                 break
             except Exception as e:
                 self._ws_connected = False
+                self._update_status_bar()
                 self.notify(f"Stream disconnected: {e}", severity="warning", timeout=3)
                 # Wait before reconnecting
                 await asyncio.sleep(2)
@@ -339,7 +378,9 @@ class CBOSApp(App):
         """Connect to WebSocket stream and handle messages"""
         try:
             async with websockets.connect(WS_STREAM_URL) as ws:
+                self._ws = ws
                 self._ws_connected = True
+                self._update_status_bar()
                 self.notify("Stream connected", timeout=2)
 
                 # Subscribe to all sessions
@@ -357,9 +398,13 @@ class CBOSApp(App):
                         pass
 
         except websockets.exceptions.ConnectionClosed:
+            self._ws = None
             self._ws_connected = False
+            self._update_status_bar()
         except Exception as e:
+            self._ws = None
             self._ws_connected = False
+            self._update_status_bar()
             raise
 
     async def _handle_stream_message(self, data: dict) -> None:
@@ -372,6 +417,9 @@ class CBOSApp(App):
             content = data.get("data", "")
 
             if session and content:
+                # Strip ANSI escape codes for clean display
+                content = strip_ansi(content)
+
                 # Append to buffer
                 current = self._stream_buffers.get(session, "")
                 new_buffer = current + content
@@ -397,6 +445,14 @@ class CBOSApp(App):
             subscribed = data.get("sessions", [])
             self.notify(f"Subscribed to: {subscribed}", timeout=2)
 
+    def _update_status_bar(self) -> None:
+        """Update status bar connection indicator"""
+        try:
+            status_bar = self.query_one("#status-bar", StatusBar)
+            status_bar.ws_connected = self._ws_connected
+        except Exception:
+            pass  # Status bar not yet mounted
+
     def _update_buffer_from_stream(self, session: str) -> None:
         """Update the buffer view from streaming content"""
         buffer = self._stream_buffers.get(session, "")
@@ -405,28 +461,6 @@ class CBOSApp(App):
         buffer_view.buffer = buffer
         # No question extraction in streaming mode
         buffer_view.question = ""
-
-    @work(exclusive=True, thread=True)
-    def refresh_sessions(self) -> None:
-        """Refresh session list from API"""
-        import httpx as sync_httpx
-
-        try:
-            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
-                resp = client.get("/sessions")
-                resp.raise_for_status()
-                new_sessions = resp.json()
-
-                # Call UI updates on main thread
-                self.call_from_thread(self._update_session_list, new_sessions)
-
-                # Get status
-                status_resp = client.get("/sessions/status")
-                status = status_resp.json()
-                self.call_from_thread(self._update_status, status)
-
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Error: {e}", severity="error", timeout=5)
 
     def _update_session_list(self, new_sessions: list[dict]) -> None:
         """Update session list on main thread"""
@@ -466,82 +500,24 @@ class CBOSApp(App):
                     static = item.query_one(Static)
                     static.update(text)
 
-    def _update_status(self, status: dict) -> None:
-        """Update status display"""
-        # Status is now shown in sidebar legend, could add counts to header if needed
-        pass
-
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle session selection"""
         if isinstance(event.item, SessionItem):
             self.selected_slug = event.item.session.get("slug")
+            session = event.item.session
+            state = session.get("state", "unknown")
+            icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
 
-            # First, show streaming buffer if available
-            if self.selected_slug in self._stream_buffers:
-                self._update_buffer_from_stream(self.selected_slug)
-
-                # Update header
-                session = event.item.session
-                state = session.get("state", "unknown")
-                icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
-                header = self.query_one("#content-header", Static)
-                header.update(
-                    Text.from_markup(
-                        f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/] [dim](streaming)[/]"
-                    )
+            # Update header
+            header = self.query_one("#content-header", Static)
+            header.update(
+                Text.from_markup(
+                    f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
                 )
-            else:
-                # Fallback to HTTP buffer load
-                self.load_buffer()
-
-    @work(exclusive=True, thread=True)
-    def load_buffer(self) -> None:
-        """Load buffer for selected session (fallback when not streaming)"""
-        if not self.selected_slug:
-            return
-
-        import httpx as sync_httpx
-
-        try:
-            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
-                # Get session details
-                resp = client.get(f"/sessions/{self.selected_slug}")
-                resp.raise_for_status()
-                session = resp.json()
-
-                # Get buffer
-                buf_resp = client.get(
-                    f"/sessions/{self.selected_slug}/buffer",
-                    params={"lines": 100},
-                )
-                buf_resp.raise_for_status()
-                buffer_data = buf_resp.json()
-
-                # Update UI on main thread
-                self.call_from_thread(
-                    self._update_buffer_view,
-                    session,
-                    buffer_data.get("buffer", "")
-                )
-
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Error loading buffer: {e}", severity="error")
-
-    def _update_buffer_view(self, session: dict, buffer: str) -> None:
-        """Update buffer view on main thread"""
-        state = session.get("state", "unknown")
-        icon, style = STATE_STYLES.get(state, STATE_STYLES["unknown"])
-
-        header = self.query_one("#content-header", Static)
-        header.update(
-            Text.from_markup(
-                f"[bold]{self.selected_slug}[/] [{style}]{icon}{state}[/]"
             )
-        )
 
-        buffer_view = self.query_one("#buffer-view", BufferView)
-        buffer_view.buffer = buffer
-        buffer_view.question = session.get("last_question", "") or ""
+            # Show streaming buffer (may be empty if session just started)
+            self._update_buffer_from_stream(self.selected_slug)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission"""
@@ -553,29 +529,34 @@ class CBOSApp(App):
         event.input.clear()
         self.query_one("#session-list", SessionList).focus()
 
-    @work(thread=True)
-    def send_input(self, text: str) -> None:
-        """Send input to the selected session"""
+    async def send_input_async(self, text: str) -> None:
+        """Send input to the selected session via WebSocket"""
         if not self.selected_slug:
             return
 
-        import httpx as sync_httpx
+        if self._ws and self._ws_connected:
+            try:
+                await self._ws.send(json.dumps({
+                    "type": "send",
+                    "session": self.selected_slug,
+                    "text": text,
+                }))
+                self.notify(f"Sent to {self.selected_slug}", timeout=2)
+            except Exception as e:
+                self.notify(f"Error: {e}", severity="error")
+        else:
+            self.notify("Not connected to stream", severity="warning")
 
-        try:
-            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
-                resp = client.post(
-                    f"/sessions/{self.selected_slug}/send",
-                    json={"text": text},
-                )
-                resp.raise_for_status()
-                self.call_from_thread(self.notify, f"Sent to {self.selected_slug}", timeout=2)
-
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+    def send_input(self, text: str) -> None:
+        """Send input to the selected session"""
+        asyncio.create_task(self.send_input_async(text))
 
     def action_refresh(self) -> None:
-        """Refresh sessions"""
-        self.refresh_sessions()
+        """Refresh sessions by reconnecting WebSocket"""
+        if self._ws_task:
+            self._ws_task.cancel()
+        self._ws_task = asyncio.create_task(self._stream_loop())
+        self.notify("Reconnecting stream...", timeout=2)
 
     def action_focus_input(self) -> None:
         """Focus the input field, optionally with suggestion"""
@@ -639,22 +620,26 @@ class CBOSApp(App):
         else:
             self.notify("Suggestion ready (review recommended)", timeout=2)
 
-    @work(thread=True)
     def action_interrupt(self) -> None:
-        """Send interrupt to selected session"""
+        """Send interrupt to selected session via WebSocket"""
         if not self.selected_slug:
-            self.call_from_thread(self.notify, "No session selected", severity="warning")
+            self.notify("No session selected", severity="warning")
             return
 
-        import httpx as sync_httpx
+        async def send_interrupt():
+            if self._ws and self._ws_connected:
+                try:
+                    await self._ws.send(json.dumps({
+                        "type": "interrupt",
+                        "session": self.selected_slug,
+                    }))
+                    self.notify(f"Interrupted {self.selected_slug}", timeout=2)
+                except Exception as e:
+                    self.notify(f"Error: {e}", severity="error")
+            else:
+                self.notify("Not connected to stream", severity="warning")
 
-        try:
-            with sync_httpx.Client(base_url=API_BASE, timeout=10) as client:
-                resp = client.post(f"/sessions/{self.selected_slug}/interrupt")
-                resp.raise_for_status()
-                self.call_from_thread(self.notify, f"Interrupted {self.selected_slug}", timeout=2)
-        except Exception as e:
-            self.call_from_thread(self.notify, f"Error: {e}", severity="error")
+        asyncio.create_task(send_interrupt())
 
     def action_attach(self) -> None:
         """Show attach command for selected session"""
