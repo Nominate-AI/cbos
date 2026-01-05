@@ -136,6 +136,7 @@ screen -r MYPROJECT
 
 | Key | Action |
 |-----|--------|
+| `c` | Create new session (project picker) |
 | `j/k` | Navigate sessions |
 | `Enter` | Focus input field |
 | `Escape` | Back to session list |
@@ -144,6 +145,19 @@ screen -r MYPROJECT
 | `a` | Show attach command |
 | `s` | Get AI suggestion |
 | `q` | Quit |
+
+#### Create Session Dialog (c)
+
+When you press `c`, CBOS discovers all Claude projects by finding `CLAUDE.md` files:
+
+| Key | Action |
+|-----|--------|
+| `j/k` | Navigate projects |
+| `Enter` | Create session for selected project |
+| `n/p` | Next/previous page |
+| `Escape` | Cancel |
+
+Session names are auto-generated from the git remote origin URL (e.g., `github.com/user/myrepo.git` → `MYREPO`).
 
 ### Session States
 
