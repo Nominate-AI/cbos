@@ -1,53 +1,315 @@
 # CBOS - Claude Code Operating System
 
-A session manager for running multiple Claude Code instances via GNU Screen.
+A session manager for running multiple Claude Code instances with real-time streaming, WebSocket API, and terminal UI.
 
 ## Features
 
-- Launch and manage multiple Claude Code sessions
-- Real-time status monitoring (waiting, thinking, working, idle)
-- Send input to sessions via API or TUI
-- Stash responses for later
-- WebSocket-based real-time updates
+- **Multi-session management** - Run multiple Claude Code instances in parallel
+- **Real-time streaming** - Live terminal output via WebSocket (no polling)
+- **Terminal UI** - Navigate sessions with vim-like keybindings
+- **WebSocket API** - Send input, receive streams, manage sessions
+- **GNU Screen integration** - Reliable session persistence
+
+## Prerequisites
+
+- Python 3.11+
+- GNU Screen
+- Claude Code CLI (`claude` command available in PATH)
+
+```bash
+# Verify prerequisites
+python3 --version    # 3.11+
+screen --version     # GNU Screen
+which claude         # Claude Code CLI
+```
 
 ## Installation
 
+### 1. Clone and install
+
 ```bash
+git clone https://github.com/Nominate-AI/cbos.git
+cd cbos
+
+# Create/activate virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install
 pip install -e .
 ```
 
-## Usage
-
-### Start the API server
+### 2. Create required directories
 
 ```bash
-cbos-api
-# or
-uvicorn cbos.api.main:app --port 8901
+mkdir -p ~/claude_streams ~/claude_logs
 ```
 
-### Launch the TUI
+### 3. Set up systemd service (recommended)
 
 ```bash
+# Copy service file
+sudo cp systemd/cbos.service /etc/systemd/system/
+
+# Edit paths if needed (default assumes ~/.pyenv/versions/nominates)
+sudo vim /etc/systemd/system/cbos.service
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable cbos
+sudo systemctl start cbos
+
+# Verify
+systemctl status cbos
+```
+
+## Quick Start
+
+### Option A: Run manually
+
+```bash
+# Terminal 1: Start API server
+cbos-api
+
+# Terminal 2: Launch TUI
 cbos
 ```
 
-### API Endpoints
+### Option B: Use systemd service
 
-- `GET /sessions` - List all sessions
-- `GET /sessions/{slug}` - Get session details
-- `POST /sessions` - Create a new session
-- `DELETE /sessions/{slug}` - Kill a session
-- `POST /sessions/{slug}/send` - Send input to a session
-- `GET /sessions/{slug}/buffer` - Get session buffer
-- `WS /ws` - WebSocket for real-time updates
+```bash
+# Start service
+sudo systemctl start cbos
+
+# Launch TUI (connects to running service)
+cbos
+```
+
+## TUI Usage
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Sessions     │  Buffer Content                             │
+│  ─────────    │  ─────────────                              │
+│  ● AUTH       │  > What should I do next?                   │
+│  ○ INTEL      │                                             │
+│  ◐ DOCS       │  ● Thinking about your request...           │
+│  ○ APP        │                                             │
+├───────────────┴─────────────────────────────────────────────┤
+│  ● streaming │ CBOS v0.7.0                                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `j/k` | Navigate sessions |
+| `Enter` | Focus input field |
+| `Escape` | Back to session list |
+| `Ctrl+C` | Send interrupt to session |
+| `r` | Reconnect WebSocket |
+| `a` | Show attach command |
+| `s` | Get AI suggestion |
+| `q` | Quit |
+
+### Session States
+
+| Icon | State | Meaning |
+|------|-------|---------|
+| `●` | waiting | Prompt visible, awaiting input |
+| `◐` | thinking | Claude is processing |
+| `◑` | working | Executing tools |
+| `○` | idle | No activity detected |
+
+## API Reference
+
+### REST Endpoints
+
+```bash
+# List sessions
+curl http://localhost:32205/sessions
+
+# Create session
+curl -X POST http://localhost:32205/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "MYPROJECT", "path": "/path/to/project"}'
+
+# Send input
+curl -X POST http://localhost:32205/sessions/MYPROJECT/send \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello Claude"}'
+
+# Send interrupt (Ctrl+C)
+curl -X POST http://localhost:32205/sessions/MYPROJECT/interrupt
+
+# Get buffer
+curl http://localhost:32205/sessions/MYPROJECT/buffer
+
+# Kill session
+curl -X DELETE http://localhost:32205/sessions/MYPROJECT
+```
+
+### WebSocket Streaming
+
+Connect to `ws://localhost:32205/ws/stream` for real-time updates.
+
+```python
+import asyncio
+import websockets
+import json
+
+async def stream():
+    async with websockets.connect("ws://localhost:32205/ws/stream") as ws:
+        # Subscribe to all sessions
+        await ws.send(json.dumps({
+            "type": "subscribe",
+            "sessions": ["*"]  # or ["AUTH", "INTEL"]
+        }))
+
+        # Receive stream events
+        async for message in ws:
+            data = json.loads(message)
+            if data["type"] == "stream":
+                print(f"[{data['session']}] {data['data']}")
+
+asyncio.run(stream())
+```
+
+#### WebSocket Messages
+
+**Client → Server:**
+```json
+{"type": "subscribe", "sessions": ["*"]}
+{"type": "send", "session": "AUTH", "text": "yes"}
+{"type": "interrupt", "session": "AUTH"}
+```
+
+**Server → Client:**
+```json
+{"type": "sessions", "sessions": [...]}
+{"type": "stream", "session": "AUTH", "data": "...", "ts": 1704326400.123}
+{"type": "subscribed", "sessions": ["AUTH"]}
+```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                         TUI (cbos)                           │
+│                    WebSocket Client                          │
+└─────────────────────────────┬────────────────────────────────┘
+                              │ ws://localhost:32205/ws/stream
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    CBOS API Server                           │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐    │
+│  │ REST API    │  │ WebSocket    │  │ StreamManager    │    │
+│  │ /sessions   │  │ /ws/stream   │  │ (watchfiles)     │    │
+│  └─────────────┘  └──────────────┘  └────────┬─────────┘    │
+└──────────────────────────────────────────────┼───────────────┘
+                                               │ watches
+                                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   ~/claude_streams/                          │
+│  AUTH.typescript  INTEL.typescript  DOCS.typescript  ...    │
+└──────────────────────────────────────────────────────────────┘
+                              ▲ script -f writes
+                              │
+┌──────────────────────────────────────────────────────────────┐
+│                      GNU Screen Sessions                     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
+│  │  AUTH    │  │  INTEL   │  │  DOCS    │  ...              │
+│  │ (claude) │  │ (claude) │  │ (claude) │                   │
+│  └──────────┘  └──────────┘  └──────────┘                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CBOS_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `CBOS_STREAM_DIR` | `~/claude_streams` | Directory for typescript files |
+
+### systemd Service
+
+The service file at `/etc/systemd/system/cbos.service`:
+
+```ini
+[Unit]
+Description=CBOS - Claude Code Session Manager API
+After=network.target
+
+[Service]
+Type=simple
+User=yourusername
+Group=yourusername
+WorkingDirectory=/path/to/cbos
+Environment="PATH=/home/user/.local/bin:/usr/local/bin:/usr/bin"
+Environment="CBOS_LOG_LEVEL=INFO"
+ExecStart=/path/to/venv/bin/uvicorn cbos.api.main:app --host 127.0.0.1 --port 32205
+Restart=always
+RestartSec=5
+SyslogIdentifier=cbos
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ## Development
 
 ```bash
-# Install dev dependencies
+# Install with dev dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest tests/ -v
+
+# Run API server in development
+uvicorn cbos.api.main:app --reload --port 32205
+
+# View logs
+sudo journalctl -u cbos -f
 ```
+
+## Troubleshooting
+
+### Session not streaming
+
+Check if the session was created with streaming enabled:
+```bash
+# Session should show script wrapper in process tree
+pstree -a $(pgrep -f "SCREEN.*MYSESSION")
+```
+
+Older sessions (created before streaming) need to be restarted.
+
+### WebSocket not connecting
+
+```bash
+# Check if API is running
+curl http://localhost:32205/sessions
+
+# Check service status
+systemctl status cbos
+```
+
+### Claude not receiving input
+
+Input requires carriage return. If using the API directly:
+```bash
+# Use the /send endpoint (handles CR automatically)
+curl -X POST http://localhost:32205/sessions/AUTH/send \
+  -H "Content-Type: application/json" \
+  -d '{"text": "your input here"}'
+```
+
+## License
+
+MIT
