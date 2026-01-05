@@ -85,6 +85,38 @@ sudo systemctl start cbos
 cbos
 ```
 
+## Creating Sessions
+
+Sessions are created through the CBOS API - you don't start screen sessions manually.
+
+```bash
+# Create a new session
+curl -X POST http://localhost:32205/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "MYPROJECT", "path": "/home/user/myproject"}'
+```
+
+CBOS automatically:
+- Creates a GNU Screen session with the specified name
+- Wraps Claude in `script -f` for real-time streaming capture
+- Sets `NO_COLOR=1` for cleaner terminal output
+- Starts Claude Code in the specified working directory
+
+**What runs under the hood:**
+```bash
+screen -dmS MYPROJECT -L -Logfile ~/claude_logs/MYPROJECT.log bash -c \
+  "script -f --timing=~/claude_streams/MYPROJECT.timing \
+   ~/claude_streams/MYPROJECT.typescript \
+   -c 'cd /home/user/myproject && NO_COLOR=1 claude'"
+```
+
+**Note:** Existing screen sessions started manually (not through CBOS) will appear in the list but won't stream - they weren't wrapped with `script -f`. Kill and recreate them through CBOS to enable streaming.
+
+**To attach directly** (bypass CBOS TUI):
+```bash
+screen -r MYPROJECT
+```
+
 ## TUI Usage
 
 ```

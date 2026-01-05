@@ -168,32 +168,6 @@ class StatusLegend(Static):
         yield Static(text)
 
 
-class StatusBar(Static):
-    """Status bar showing version and connection state"""
-
-    ws_connected = reactive(False)
-
-    def compose(self) -> ComposeResult:
-        yield Static(id="status-text")
-
-    def watch_ws_connected(self, connected: bool) -> None:
-        self._update_status()
-
-    def on_mount(self) -> None:
-        self._update_status()
-
-    def _update_status(self) -> None:
-        text = Text()
-        if self.ws_connected:
-            text.append("● ", style="bold green")
-            text.append("streaming ", style="dim green")
-        else:
-            text.append("○ ", style="dim red")
-            text.append("disconnected ", style="dim red")
-        text.append("│ ", style="dim")
-        text.append(get_version_string(), style="dim")
-        status = self.query_one("#status-text", Static)
-        status.update(text)
 
 
 class CBOSApp(App):
@@ -288,17 +262,6 @@ class CBOSApp(App):
         height: auto;
     }
 
-    #status-bar {
-        dock: bottom;
-        height: 1;
-        background: $surface-darken-2;
-        text-align: right;
-        padding: 0 1;
-    }
-
-    #status-text {
-        text-align: right;
-    }
     """
 
     BINDINGS = [
@@ -315,7 +278,7 @@ class CBOSApp(App):
     ]
 
     TITLE = "CBOS"
-    SUB_TITLE = "Claude Code Session Manager [Streaming]"
+    SUB_TITLE = "Claude Code Session Manager"
 
     def __init__(self) -> None:
         super().__init__()
@@ -352,7 +315,6 @@ class CBOSApp(App):
                     )
 
         yield Footer()
-        yield StatusBar(id="status-bar")
 
     async def on_mount(self) -> None:
         """Initialize the app"""
@@ -446,12 +408,11 @@ class CBOSApp(App):
             self.notify(f"Subscribed to: {subscribed}", timeout=2)
 
     def _update_status_bar(self) -> None:
-        """Update status bar connection indicator"""
-        try:
-            status_bar = self.query_one("#status-bar", StatusBar)
-            status_bar.ws_connected = self._ws_connected
-        except Exception:
-            pass  # Status bar not yet mounted
+        """Update subtitle with connection status"""
+        if self._ws_connected:
+            self.sub_title = f"● streaming │ {get_version_string()}"
+        else:
+            self.sub_title = f"○ disconnected │ {get_version_string()}"
 
     def _update_buffer_from_stream(self, session: str) -> None:
         """Update the buffer view from streaming content"""
