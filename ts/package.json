@@ -1,0 +1,19 @@
+{
+  "name": "cbos-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:server": "npm run dev -w @cbos/server",
+    "dev:tui": "npm run dev -w @cbos/tui",
+    "server": "npm run start -w @cbos/server",
+    "tui": "npm run start -w @cbos/tui"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
