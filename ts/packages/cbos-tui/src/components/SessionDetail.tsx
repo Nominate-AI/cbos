@@ -45,7 +45,22 @@ export function SessionDetail({ session }: Props) {
         <Text>{new Date(session.lastActivity).toLocaleString()}</Text>
       </Box>
 
-      {session.lastContext && (
+      {/* Show streaming buffer if available */}
+      {session.buffer && (
+        <Box flexDirection="column" marginTop={1} flexGrow={1}>
+          <Text bold underline>Output</Text>
+          <Box marginTop={1} borderStyle="single" paddingX={1} paddingY={0} flexGrow={1}>
+            <Text wrap="wrap">
+              {session.buffer.length > 2000
+                ? '...' + session.buffer.slice(-2000)
+                : session.buffer}
+            </Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Show last context if no buffer */}
+      {!session.buffer && session.lastContext && (
         <Box flexDirection="column" marginTop={1}>
           <Text bold underline>Last Response</Text>
           <Box marginTop={1} borderStyle="single" paddingX={1} paddingY={0}>

@@ -100,17 +100,27 @@ export function installHook(): { installed: boolean; hookPath: string; message: 
     hooks.Stop = [];
   }
 
-  // Check if already registered
+  // Check if already registered (new format uses hooks array, not command)
   const hookEntry = {
     matcher: '*',
-    command: ['bash', hookPath],
+    hooks: [{ type: 'command', command: `bash ${hookPath}` }],
   };
 
   const exists = hooks.Stop.some((h: unknown) => {
     if (typeof h === 'object' && h !== null) {
       const entry = h as Record<string, unknown>;
+      // Check both old format (command array) and new format (hooks array)
       if (Array.isArray(entry.command)) {
         return entry.command.includes(hookPath);
+      }
+      if (Array.isArray(entry.hooks)) {
+        return entry.hooks.some((hook: unknown) => {
+          if (typeof hook === 'object' && hook !== null) {
+            const cmd = (hook as Record<string, unknown>).command;
+            return typeof cmd === 'string' && cmd.includes(hookPath);
+          }
+          return false;
+        });
       }
     }
     return false;

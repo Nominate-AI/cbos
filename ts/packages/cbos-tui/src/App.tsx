@@ -44,7 +44,8 @@ export function App() {
       }
 
       // Actions
-      if (input === 'i' && selectedSession && selectedSession.state === 'waiting') {
+      // Allow input for both 'idle' (first prompt) and 'waiting' (responding to question)
+      if (input === 'i' && selectedSession && (selectedSession.state === 'waiting' || selectedSession.state === 'idle')) {
         setModal('input');
         return;
       }
@@ -81,7 +82,8 @@ export function App() {
 
   const handleSessionEnter = (session: Session) => {
     setView('detail');
-    if (session.state === 'waiting') {
+    // Auto-open input for idle (first prompt) or waiting (question) sessions
+    if (session.state === 'waiting' || session.state === 'idle') {
       setModal('input');
     }
   };
@@ -152,6 +154,7 @@ export function App() {
 
       {modal === 'create' && (
         <CreateModal
+          activePaths={new Set(sessions.map((s) => s.path))}
           onSubmit={handleCreateSubmit}
           onCancel={() => setModal('none')}
         />

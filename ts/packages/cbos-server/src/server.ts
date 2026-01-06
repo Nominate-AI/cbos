@@ -116,6 +116,7 @@ export class CBOSServer {
 
       case 'send_input':
         // Handled by SessionManager - emit event
+        console.log(`[server] send_input received for ${msg.slug}`);
         this.emit('send_input', msg.slug, msg.text);
         break;
 

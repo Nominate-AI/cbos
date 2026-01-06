@@ -49,6 +49,7 @@ export type ServerMessage =
   | { type: 'session_created'; session: Session }
   | { type: 'session_deleted'; slug: string }
   | { type: 'claude_event'; slug: string; event: unknown }
+  | { type: 'output'; slug: string; data: string }
   | { type: 'error'; message: string };
 
 // WebSocket Messages - Client to Server

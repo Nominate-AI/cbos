@@ -13,6 +13,7 @@ interface Session {
   lastActivity: string;
   lastContext?: string;
   messageCount: number;
+  buffer?: string;  // Streaming output buffer
 }
 
 type ServerMessage =
@@ -22,6 +23,7 @@ type ServerMessage =
   | { type: 'session_created'; session: Session }
   | { type: 'session_deleted'; slug: string }
   | { type: 'claude_event'; slug: string; event: unknown }
+  | { type: 'output'; slug: string; data: string }
   | { type: 'error'; message: string };
 
 type ClientMessage =
@@ -125,6 +127,17 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
           prev.map((s) =>
             s.slug === msg.slug
               ? { ...s, state: 'waiting' as SessionState, lastContext: msg.context }
+              : s
+          )
+        );
+        break;
+
+      case 'output':
+        // Append output to session buffer
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.slug === msg.slug
+              ? { ...s, buffer: (s.buffer ?? '') + msg.data }
               : s
           )
         );

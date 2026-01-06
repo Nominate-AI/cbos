@@ -1,11 +1,11 @@
-import { spawn, ChildProcess } from 'child_process';
+import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import { SessionStore } from './store.js';
 import { SessionState } from './models.js';
 
 interface RunningSession {
   slug: string;
-  process: ChildProcess;
+  pty: pty.IPty;
   claudeSessionId?: string;
 }
 
@@ -51,26 +51,29 @@ export class SessionManager extends EventEmitter {
 
     console.log(`Starting Claude for ${slug}: ${this.claudeCommand} ${args.join(' ')}`);
 
-    const proc = spawn(this.claudeCommand, args, {
+    // Use node-pty to spawn with a pseudo-terminal (Claude requires TTY)
+    const proc = pty.spawn(this.claudeCommand, args, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
       cwd: session.path,
       env: {
         ...process.env,
         NO_COLOR: '1',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      } as { [key: string]: string },
     });
 
-    this.running.set(slug, { slug, process: proc });
+    this.running.set(slug, { slug, pty: proc });
     this.store.update(slug, { state: 'working' });
     this.emit('state_change', slug, 'working');
 
     let buffer = '';
 
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      this.emit('output', slug, text);
+    proc.onData((data: string) => {
+      console.log(`[${slug}] output (${data.length} bytes):`, data.slice(0, 100));
+      this.emit('output', slug, data);
 
-      buffer += text;
+      buffer += data;
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
@@ -85,24 +88,13 @@ export class SessionManager extends EventEmitter {
       }
     });
 
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      console.error(`[${slug}] stderr: ${chunk.toString()}`);
-    });
-
-    proc.on('close', (code) => {
+    proc.onExit(({ exitCode }) => {
       this.running.delete(slug);
-      const newState: SessionState = code === 0 ? 'idle' : 'error';
+      const newState: SessionState = exitCode === 0 ? 'idle' : 'error';
       this.store.update(slug, { state: newState });
       this.emit('state_change', slug, newState);
-      this.emit('process_end', slug, code);
-      console.log(`Claude process for ${slug} exited with code ${code}`);
-    });
-
-    proc.on('error', (err) => {
-      console.error(`[${slug}] process error:`, err);
-      this.running.delete(slug);
-      this.store.update(slug, { state: 'error' });
-      this.emit('state_change', slug, 'error');
+      this.emit('process_end', slug, exitCode);
+      console.log(`Claude process for ${slug} exited with code ${exitCode}`);
     });
   }
 
@@ -146,7 +138,7 @@ export class SessionManager extends EventEmitter {
     }
 
     console.log(`Interrupting session ${slug}`);
-    running.process.kill('SIGTERM');
+    running.pty.kill();
     return true;
   }
 
@@ -158,14 +150,14 @@ export class SessionManager extends EventEmitter {
     return this.running.size;
   }
 
-  // Send input to stdin of running process (for interactive mode)
+  // Send input to pty
   sendStdin(slug: string, text: string): boolean {
     const running = this.running.get(slug);
-    if (!running || !running.process.stdin) {
+    if (!running) {
       return false;
     }
 
-    running.process.stdin.write(text + '\n');
+    running.pty.write(text + '\n');
     return true;
   }
 }

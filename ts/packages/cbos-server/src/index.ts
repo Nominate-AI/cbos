@@ -37,10 +37,18 @@ async function main() {
     }
   });
 
+  // Forward raw output to WebSocket clients
+  sessionManager.on('output', (slug: string, data: string) => {
+    console.log(`Broadcasting output to ${slug}: ${data.length} bytes`);
+    server.broadcast({ type: 'output', slug, data }, slug);
+  });
+
   // Handle send_input from WebSocket clients
   server.on('send_input', async (slug: string, text: string) => {
+    console.log(`>>> Received send_input for ${slug}: "${text.slice(0, 50)}..."`);
     try {
       await sessionManager.invoke(slug, text);
+      console.log(`>>> invoke() completed for ${slug}`);
     } catch (e) {
       console.error(`Failed to invoke session ${slug}:`, e);
     }
