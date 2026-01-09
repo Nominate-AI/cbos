@@ -41,6 +41,34 @@ export const WaitingEventSchema = z.object({
 });
 export type WaitingEvent = z.infer<typeof WaitingEventSchema>;
 
+// Event categories for display
+export type EventCategory =
+  | 'init'
+  | 'thinking'
+  | 'text'
+  | 'tool_use'
+  | 'tool_result'
+  | 'result'
+  | 'error'
+  | 'waiting'
+  | 'unknown';
+
+// Formatted event for TUI display
+export interface FormattedEvent {
+  category: EventCategory;
+  timestamp: string;
+  summary: string;
+  details?: string;
+  isActionable: boolean;
+  priority: 'low' | 'normal' | 'high' | 'critical';
+  toolName?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  cost?: number;
+  duration?: number;
+  sessionId?: string;
+}
+
 // WebSocket Messages - Server to Client
 export type ServerMessage =
   | { type: 'sessions'; sessions: Session[] }
@@ -50,6 +78,7 @@ export type ServerMessage =
   | { type: 'session_deleted'; slug: string }
   | { type: 'claude_event'; slug: string; event: unknown }
   | { type: 'output'; slug: string; data: string }
+  | { type: 'formatted_event'; slug: string; event: FormattedEvent }
   | { type: 'error'; message: string };
 
 // WebSocket Messages - Client to Server

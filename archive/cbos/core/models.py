@@ -7,6 +7,17 @@ from pydantic import BaseModel, Field
 import uuid
 
 
+class SessionType(str, Enum):
+    """
+    Type of Claude Code session.
+
+    NOTE: As of v2.0, JSON mode is the only supported mode.
+    Screen mode is deprecated and kept for backwards compatibility only.
+    """
+    JSON = "json"      # JSON streaming mode (active, recommended)
+    SCREEN = "screen"  # DEPRECATED: Traditional screen-based session
+
+
 class SessionState(str, Enum):
     """State of a Claude Code session"""
 
@@ -19,18 +30,27 @@ class SessionState(str, Enum):
 
 
 class Session(BaseModel):
-    """Represents a Claude Code session running in GNU Screen"""
+    """
+    Represents a Claude Code session.
+
+    Sessions use JSON streaming mode (`claude -p --output-format stream-json`).
+    Legacy screen sessions are supported for backwards compatibility.
+    """
 
     slug: str  # e.g., "AUTH", "INTEL"
     path: str = ""  # Working directory
-    screen_id: str = ""  # e.g., "900379.AUTH"
-    state: SessionState = SessionState.UNKNOWN
-    pid: Optional[int] = None
+    session_type: SessionType = SessionType.JSON  # Default to JSON mode
+    state: SessionState = SessionState.IDLE
+    claude_session_id: Optional[str] = None  # Claude's internal session ID for --resume
     created_at: datetime = Field(default_factory=datetime.now)
     last_activity: datetime = Field(default_factory=datetime.now)
-    last_question: Optional[str] = None  # Last question Claude asked (if waiting)
-    buffer_tail: Optional[str] = None  # Last N lines of buffer
-    attached: bool = False  # Whether session is attached to a terminal
+
+    # DEPRECATED: Legacy screen mode fields (kept for backwards compatibility)
+    screen_id: str = ""  # e.g., "900379.AUTH" - only for screen mode
+    pid: Optional[int] = None  # Screen process PID
+    last_question: Optional[str] = None  # Last question Claude asked (screen mode heuristic)
+    buffer_tail: Optional[str] = None  # Last N lines of buffer (screen mode)
+    attached: bool = False  # Whether screen session is attached
 
 
 class StashedResponse(BaseModel):
@@ -45,16 +65,31 @@ class StashedResponse(BaseModel):
 
 
 class SessionCreate(BaseModel):
-    """Request to create a new session"""
+    """
+    Request to create a new session.
+
+    NOTE: session_type is ignored - all sessions are now JSON mode.
+    The parameter is kept for backwards compatibility.
+    """
 
     slug: str
     path: str
+    session_type: SessionType = SessionType.JSON  # DEPRECATED: Always JSON now
 
 
 class SendInput(BaseModel):
     """Request to send input to a session"""
 
     text: str
+
+
+class InvokeRequest(BaseModel):
+    """Request to invoke Claude on a JSON session"""
+
+    prompt: str
+    skip_permissions: bool = True  # Use --dangerously-skip-permissions
+    model: Optional[str] = None  # Override model (e.g., "opus", "sonnet")
+    max_turns: Optional[int] = None  # Limit agentic turns
 
 
 class SessionStatus(BaseModel):

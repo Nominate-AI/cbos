@@ -4,6 +4,37 @@ import WebSocket from 'ws';
 // Types (inline to avoid cross-package import issues)
 type SessionState = 'idle' | 'thinking' | 'working' | 'waiting' | 'error';
 
+type EventCategory =
+  | 'init'
+  | 'thinking'
+  | 'text'
+  | 'tool_use'
+  | 'tool_result'
+  | 'result'
+  | 'error'
+  | 'waiting'
+  | 'question'
+  | 'system'
+  | 'compact'
+  | 'user_msg'
+  | 'unknown';
+
+interface FormattedEvent {
+  category: EventCategory;
+  timestamp: string;
+  summary: string;
+  details?: string;
+  isActionable: boolean;
+  priority: 'low' | 'normal' | 'high' | 'critical';
+  toolName?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  cost?: number;
+  duration?: number;
+  sessionId?: string;
+  questionOptions?: string[];
+}
+
 interface Session {
   slug: string;
   path: string;
@@ -13,7 +44,7 @@ interface Session {
   lastActivity: string;
   lastContext?: string;
   messageCount: number;
-  buffer?: string;  // Streaming output buffer
+  events: FormattedEvent[];  // Formatted events
 }
 
 type ServerMessage =
@@ -24,6 +55,7 @@ type ServerMessage =
   | { type: 'session_deleted'; slug: string }
   | { type: 'claude_event'; slug: string; event: unknown }
   | { type: 'output'; slug: string; data: string }
+  | { type: 'formatted_event'; slug: string; event: FormattedEvent }
   | { type: 'error'; message: string };
 
 type ClientMessage =
@@ -105,11 +137,18 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   const handleMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'sessions':
-        setSessions(msg.sessions);
+        // Preserve existing events when updating sessions (server doesn't send events)
+        setSessions((prev) => {
+          const prevEventsMap = new Map(prev.map((s) => [s.slug, s.events || []]));
+          return msg.sessions.map((s) => ({
+            ...s,
+            events: s.events || prevEventsMap.get(s.slug) || [],
+          }));
+        });
         break;
 
       case 'session_created':
-        setSessions((prev) => [...prev, msg.session]);
+        setSessions((prev) => [...prev, { ...msg.session, events: [] }]);
         break;
 
       case 'session_deleted':
@@ -117,8 +156,13 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         break;
 
       case 'session_update':
+        // Preserve existing events when updating session metadata
         setSessions((prev) =>
-          prev.map((s) => (s.slug === msg.session.slug ? msg.session : s))
+          prev.map((s) =>
+            s.slug === msg.session.slug
+              ? { ...msg.session, events: msg.session.events || s.events || [] }
+              : s
+          )
         );
         break;
 
@@ -133,13 +177,32 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         break;
 
       case 'output':
-        // Append output to session buffer
+        // Raw output - deprecated, use formatted_event instead
+        break;
+
+      case 'formatted_event':
+        // Add formatted event to session (with deduplication)
         setSessions((prev) =>
-          prev.map((s) =>
-            s.slug === msg.slug
-              ? { ...s, buffer: (s.buffer ?? '') + msg.data }
-              : s
-          )
+          prev.map((s) => {
+            if (s.slug !== msg.slug) return s;
+
+            const existingEvents = s.events || [];
+            const lastEvent = existingEvents.at(-1);
+
+            // Skip duplicate events (same category and summary)
+            if (
+              lastEvent &&
+              lastEvent.category === msg.event.category &&
+              lastEvent.summary === msg.event.summary
+            ) {
+              return s;
+            }
+
+            return {
+              ...s,
+              events: [...existingEvents, msg.event].slice(-100), // Keep last 100 events
+            };
+          })
         );
         break;
 
@@ -211,4 +274,4 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   };
 }
 
-export type { Session, SessionState };
+export type { Session, SessionState, FormattedEvent, EventCategory };

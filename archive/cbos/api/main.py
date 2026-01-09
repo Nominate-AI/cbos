@@ -10,11 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..core.store import SessionStore
 from ..core.stream import StreamManager
+from ..core.json_manager import JSONSessionManager, JSONSessionState, ClaudeEvent
 from ..core.models import (
     Session,
     SessionCreate,
+    SessionState,
     SendInput,
+    InvokeRequest,
     SessionStatus,
+    SessionType,
     StashedResponse,
     WSMessage,
 )
@@ -28,6 +32,7 @@ logger = get_logger("api")
 # Global state
 store: Optional[SessionStore] = None
 stream_manager: Optional[StreamManager] = None
+json_manager: Optional[JSONSessionManager] = None
 connected_clients: set[WebSocket] = set()  # Legacy clients
 refresh_task: Optional[asyncio.Task] = None
 stream_task: Optional[asyncio.Task] = None
@@ -62,15 +67,17 @@ async def refresh_loop():
             await asyncio.to_thread(store.sync_with_screen)
             await asyncio.to_thread(store.refresh_states)
 
-            # Check for sessions waiting for input
+            # Check for sessions waiting for input (legacy screen mode)
             waiting = store.waiting()
-            sessions = store.all()
+
+            # Get ALL sessions (screen + JSON) using the unified list_sessions function
+            all_sessions = list_sessions()
 
             # Broadcast update to all clients
             await broadcast(
                 {
                     "type": "refresh",
-                    "sessions": [s.model_dump(mode="json") for s in sessions],
+                    "sessions": [s.model_dump(mode="json") for s in all_sessions],
                     "waiting_count": len(waiting),
                 }
             )
@@ -111,7 +118,7 @@ def cleanup_stale_typescript_files(active_slugs: set[str]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global store, stream_manager, refresh_task, stream_task
+    global store, stream_manager, json_manager, refresh_task, stream_task
 
     logger.info("Starting CBOS API server")
 
@@ -128,6 +135,23 @@ async def lifespan(app: FastAPI):
 
     # Register stream callback to broadcast to WebSocket clients
     stream_manager.on_stream(connection_manager.broadcast_stream)
+
+    # Initialize JSON session manager
+    json_manager = JSONSessionManager()
+
+    # Register JSON event callback to broadcast via WebSocket
+    async def broadcast_json_event(slug: str, event: ClaudeEvent):
+        await connection_manager.broadcast_json_event(slug, event)
+
+    json_manager.on_event(broadcast_json_event)
+
+    # Register JSON state callback
+    async def broadcast_json_state(slug: str, state: JSONSessionState):
+        await connection_manager.broadcast_json_state(slug, state)
+
+    json_manager.on_state_change(broadcast_json_state)
+
+    logger.info("JSON session manager initialized")
 
     # Start stream watcher task
     stream_task = asyncio.create_task(stream_manager.start())
@@ -186,10 +210,34 @@ def root():
 
 @app.get("/sessions", response_model=list[Session])
 def list_sessions():
-    """List all sessions"""
+    """List all sessions (both screen and JSON modes)"""
     store.sync_with_screen()
     store.refresh_states()
-    return store.all()
+
+    # Get screen sessions
+    sessions = store.all()
+
+    # Add JSON sessions
+    if json_manager:
+        for js in json_manager.list_sessions():
+            # Map JSON session state to SessionState
+            state_map = {
+                "idle": SessionState.IDLE,
+                "running": SessionState.WORKING,
+                "complete": SessionState.IDLE,
+                "error": SessionState.ERROR,
+            }
+            sessions.append(Session(
+                slug=js.slug,
+                path=js.path,
+                session_type=SessionType.JSON,
+                state=state_map.get(js.state.value, SessionState.UNKNOWN),
+                claude_session_id=js.claude_session_id,
+                created_at=js.created_at,
+                last_activity=js.last_activity,
+            ))
+
+    return sessions
 
 
 @app.get("/sessions/status", response_model=SessionStatus)
@@ -230,47 +278,120 @@ def get_session(slug: str):
 
 @app.post("/sessions", response_model=Session)
 def create_session(req: SessionCreate):
-    """Create a new Claude Code session"""
-    existing = store.get(req.slug)
-    if existing:
+    """
+    Create a new Claude Code session.
+
+    NOTE: All sessions now use JSON streaming mode. The session_type parameter
+    is ignored for backwards compatibility but all sessions are JSON mode.
+
+    JSON mode uses `claude -p --output-format stream-json --resume` for
+    structured output instead of screen scraping.
+    """
+    if not json_manager:
+        raise HTTPException(500, "JSON session manager not initialized")
+
+    # Check for existing session
+    existing_json = json_manager.get_session(req.slug)
+    if existing_json:
         raise HTTPException(400, f"Session '{req.slug}' already exists")
 
+    # DEPRECATED: Screen mode is no longer supported
+    # All sessions now use JSON streaming mode
+    existing_screen = store.get(req.slug)
+    if existing_screen:
+        raise HTTPException(400, f"Session '{req.slug}' already exists (legacy screen session)")
+
     try:
-        return store.create(req.slug, req.path)
+        # Create JSON mode session (this is now the only mode)
+        json_session = json_manager.create_session(req.slug, req.path)
+
+        # Map JSON state to SessionState enum
+        state_map = {
+            "idle": SessionState.IDLE,
+            "running": SessionState.WORKING,
+            "complete": SessionState.IDLE,
+            "error": SessionState.ERROR,
+        }
+
+        return Session(
+            slug=json_session.slug,
+            path=json_session.path,
+            session_type=SessionType.JSON,
+            state=state_map.get(json_session.state.value, SessionState.IDLE),
+            claude_session_id=json_session.claude_session_id,
+            created_at=json_session.created_at,
+            last_activity=json_session.last_activity,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
+        logger.exception(f"Failed to create session {req.slug}")
         raise HTTPException(500, str(e))
 
 
 @app.delete("/sessions/{slug}")
 def delete_session(slug: str):
-    """Kill a session"""
-    if not store.delete(slug):
-        raise HTTPException(404, f"Session '{slug}' not found")
-    return {"status": "deleted", "slug": slug}
+    """Kill a session (screen or JSON mode)"""
+    # Try deleting from screen sessions first
+    if store.get(slug):
+        if not store.delete(slug):
+            raise HTTPException(500, f"Failed to delete session '{slug}'")
+        return {"status": "deleted", "slug": slug}
+
+    # Try JSON sessions
+    if json_manager and json_manager.get_session(slug):
+        if not json_manager.delete_session(slug):
+            raise HTTPException(500, f"Failed to delete JSON session '{slug}'")
+        return {"status": "deleted", "slug": slug}
+
+    raise HTTPException(404, f"Session '{slug}' not found")
 
 
 @app.post("/sessions/{slug}/send")
-def send_to_session(slug: str, req: SendInput):
-    """Send input to a session"""
-    if not store.get(slug):
-        raise HTTPException(404, f"Session '{slug}' not found")
+async def send_to_session(slug: str, req: SendInput):
+    """Send input to a session (screen: send keystrokes, JSON: invoke)"""
+    # Check screen sessions first
+    if store.get(slug):
+        if not store.send_input(slug, req.text):
+            raise HTTPException(500, "Failed to send input")
+        return {"status": "sent", "slug": slug}
 
-    if not store.send_input(slug, req.text):
-        raise HTTPException(500, "Failed to send input")
+    # Check JSON sessions - invoke instead of send
+    if json_manager and json_manager.get_session(slug):
+        session = json_manager.get_session(slug)
+        if session.state == JSONSessionState.RUNNING:
+            raise HTTPException(400, f"Session '{slug}' is already running")
 
-    return {"status": "sent", "slug": slug}
+        # Start invocation in background
+        async def run_invocation():
+            try:
+                async for event in json_manager.invoke(slug, req.text):
+                    pass  # Events are broadcast via callback
+            except Exception as e:
+                logger.error(f"Invocation error for {slug}: {e}")
+
+        asyncio.create_task(run_invocation())
+        return {"status": "invoked", "slug": slug}
+
+    raise HTTPException(404, f"Session '{slug}' not found")
 
 
 @app.post("/sessions/{slug}/interrupt")
-def interrupt_session(slug: str):
-    """Send Ctrl+C to a session"""
-    if not store.get(slug):
-        raise HTTPException(404, f"Session '{slug}' not found")
+async def interrupt_session(slug: str):
+    """Send interrupt to a session (screen: Ctrl+C, JSON: terminate)"""
+    # Check screen sessions first
+    if store.get(slug):
+        if not store.send_interrupt(slug):
+            raise HTTPException(500, "Failed to send interrupt")
+        return {"status": "interrupted", "slug": slug}
 
-    if not store.send_interrupt(slug):
-        raise HTTPException(500, "Failed to send interrupt")
+    # Check JSON sessions
+    if json_manager and json_manager.get_session(slug):
+        if await json_manager.interrupt(slug):
+            return {"status": "interrupted", "slug": slug}
+        raise HTTPException(400, "Session not running")
 
-    return {"status": "interrupted", "slug": slug}
+    raise HTTPException(404, f"Session '{slug}' not found")
 
 
 @app.get("/sessions/{slug}/buffer")
@@ -327,6 +448,115 @@ def delete_stash(stash_id: str):
     if not store.delete_stash(stash_id):
         raise HTTPException(404, f"Stash '{stash_id}' not found")
     return {"status": "deleted", "stash_id": stash_id}
+
+
+# ============================================================================
+# JSON Session Endpoints
+# ============================================================================
+
+
+@app.get("/json-sessions")
+def list_json_sessions():
+    """List all JSON-mode sessions"""
+    if not json_manager:
+        return []
+    return [s.to_dict() for s in json_manager.list_sessions()]
+
+
+@app.get("/json-sessions/{slug}")
+def get_json_session(slug: str):
+    """Get a JSON session by slug"""
+    if not json_manager:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    session = json_manager.get_session(slug)
+    if not session:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    return session.to_dict()
+
+
+@app.post("/json-sessions/{slug}/invoke")
+async def invoke_json_session(slug: str, req: InvokeRequest):
+    """
+    Invoke Claude on a JSON session.
+
+    This starts an async invocation - events are streamed via WebSocket.
+    Returns immediately with invocation status.
+    """
+    if not json_manager:
+        raise HTTPException(500, "JSON session manager not initialized")
+
+    session = json_manager.get_session(slug)
+    if not session:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    if session.state == JSONSessionState.RUNNING:
+        raise HTTPException(400, f"Session '{slug}' is already running")
+
+    # Start invocation in background
+    async def run_invocation():
+        try:
+            async for event in json_manager.invoke(
+                slug,
+                req.prompt,
+                skip_permissions=req.skip_permissions,
+                model=req.model,
+                max_turns=req.max_turns,
+            ):
+                pass  # Events are broadcast via callback
+        except Exception as e:
+            logger.error(f"Invocation error for {slug}: {e}")
+
+    asyncio.create_task(run_invocation())
+
+    return {"status": "started", "slug": slug}
+
+
+@app.get("/json-sessions/{slug}/events")
+def get_json_events(slug: str, limit: int = 50, event_type: Optional[str] = None):
+    """Get recent events for a JSON session"""
+    if not json_manager:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    events = json_manager.get_events(slug, limit=limit, event_type=event_type)
+    return {"events": [e.to_dict() for e in events]}
+
+
+@app.post("/json-sessions/{slug}/interrupt")
+async def interrupt_json_session(slug: str):
+    """Interrupt a running JSON session"""
+    if not json_manager:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    if await json_manager.interrupt(slug):
+        return {"status": "interrupted", "slug": slug}
+    raise HTTPException(400, "Session not running or not found")
+
+
+@app.delete("/json-sessions/{slug}")
+def delete_json_session(slug: str):
+    """Delete a JSON session"""
+    if not json_manager:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    if not json_manager.delete_session(slug):
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    return {"status": "deleted", "slug": slug}
+
+
+@app.get("/json-sessions/{slug}/last-response")
+def get_last_response(slug: str):
+    """Get the last assistant response from a JSON session"""
+    if not json_manager:
+        raise HTTPException(404, f"JSON session '{slug}' not found")
+
+    response = json_manager.get_last_response(slug)
+    if response is None:
+        raise HTTPException(404, f"No response found for session '{slug}'")
+
+    return {"slug": slug, "response": response}
 
 
 # ============================================================================
@@ -584,12 +814,12 @@ async def stream_endpoint(ws: WebSocket):
     logger.info(f"Stream client connected. Total: {connection_manager.connection_count}")
 
     try:
-        # Send initial session list
+        # Send initial session list (both screen and JSON)
         store.sync_with_screen()
-        sessions = [s.model_dump(mode="json") for s in store.all()]
+        all_sessions = list_sessions()  # Uses the updated function that includes JSON sessions
         await ws.send_json({
             "type": "sessions",
-            "sessions": sessions,
+            "sessions": [s.model_dump(mode="json") for s in all_sessions],
         })
 
         # Send available streams (typescript files)
@@ -652,24 +882,57 @@ async def stream_endpoint(ws: WebSocket):
 
             elif msg_type == "send":
                 # Send input to a session
-                session = data.get("session")
+                session_slug = data.get("session")
                 text = data.get("text")
-                if session and text:
-                    success = store.send_input(session, text)
-                    await ws.send_json({
-                        "type": "send_result",
-                        "session": session,
-                        "success": success,
-                    })
+                if session_slug and text:
+                    # Check if it's a JSON session
+                    json_session = json_manager.get_session(session_slug) if json_manager else None
+                    if json_session:
+                        # JSON session: invoke Claude
+                        if json_session.state == JSONSessionState.RUNNING:
+                            await ws.send_json({
+                                "type": "send_result",
+                                "session": session_slug,
+                                "success": False,
+                                "error": "Session is already running",
+                            })
+                        else:
+                            # Start invocation in background
+                            async def run_json_invoke(slug: str, prompt: str):
+                                try:
+                                    async for event in json_manager.invoke(slug, prompt):
+                                        pass  # Events broadcast via callback
+                                except Exception as e:
+                                    logger.error(f"JSON invoke error for {slug}: {e}")
+
+                            asyncio.create_task(run_json_invoke(session_slug, text))
+                            await ws.send_json({
+                                "type": "send_result",
+                                "session": session_slug,
+                                "success": True,
+                            })
+                    else:
+                        # Screen session: send keystrokes
+                        success = store.send_input(session_slug, text)
+                        await ws.send_json({
+                            "type": "send_result",
+                            "session": session_slug,
+                            "success": success,
+                        })
 
             elif msg_type == "interrupt":
                 # Send interrupt to a session
-                session = data.get("session")
-                if session:
-                    success = store.send_interrupt(session)
+                session_slug = data.get("session")
+                if session_slug:
+                    # Check if it's a JSON session
+                    json_session = json_manager.get_session(session_slug) if json_manager else None
+                    if json_session:
+                        success = await json_manager.interrupt(session_slug)
+                    else:
+                        success = store.send_interrupt(session_slug)
                     await ws.send_json({
                         "type": "interrupt_result",
-                        "session": session,
+                        "session": session_slug,
                         "success": success,
                     })
 
@@ -685,12 +948,12 @@ async def stream_endpoint(ws: WebSocket):
                     })
 
             elif msg_type == "list_sessions":
-                # Refresh and send session list
+                # Refresh and send session list (both screen and JSON)
                 store.sync_with_screen()
-                sessions = [s.model_dump(mode="json") for s in store.all()]
+                all_sessions = list_sessions()  # Uses the updated list_sessions function
                 await ws.send_json({
                     "type": "sessions",
-                    "sessions": sessions,
+                    "sessions": [s.model_dump(mode="json") for s in all_sessions],
                 })
 
     except WebSocketDisconnect:

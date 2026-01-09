@@ -37,10 +37,15 @@ async function main() {
     }
   });
 
-  // Forward raw output to WebSocket clients
+  // Forward raw output to WebSocket clients (for debugging)
   sessionManager.on('output', (slug: string, data: string) => {
-    console.log(`Broadcasting output to ${slug}: ${data.length} bytes`);
-    server.broadcast({ type: 'output', slug, data }, slug);
+    // Disabled - use formatted_event instead
+    // server.broadcast({ type: 'output', slug, data }, slug);
+  });
+
+  // Forward formatted events to WebSocket clients
+  sessionManager.on('formatted_event', (slug: string, event) => {
+    server.broadcast({ type: 'formatted_event', slug, event } as any, slug);
   });
 
   // Handle send_input from WebSocket clients

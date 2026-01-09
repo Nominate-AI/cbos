@@ -2,11 +2,13 @@ import * as pty from 'node-pty';
 import { EventEmitter } from 'events';
 import { SessionStore } from './store.js';
 import { SessionState } from './models.js';
+import { formatEvent, FormattedEvent } from './event-formatter.js';
 
 interface RunningSession {
   slug: string;
   pty: pty.IPty;
   claudeSessionId?: string;
+  lastTextSummary?: string; // Track last text to deduplicate
 }
 
 export interface SessionManagerEvents {
@@ -14,6 +16,7 @@ export interface SessionManagerEvents {
   claude_event: (slug: string, event: unknown) => void;
   process_end: (slug: string, code: number | null) => void;
   output: (slug: string, data: string) => void;
+  formatted_event: (slug: string, event: FormattedEvent) => void;
 }
 
 export class SessionManager extends EventEmitter {
@@ -52,14 +55,18 @@ export class SessionManager extends EventEmitter {
     console.log(`Starting Claude for ${slug}: ${this.claudeCommand} ${args.join(' ')}`);
 
     // Use node-pty to spawn with a pseudo-terminal (Claude requires TTY)
+    // Use 'dumb' terminal to disable cursor/screen control codes
     const proc = pty.spawn(this.claudeCommand, args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 30,
+      name: 'dumb',
+      cols: 200,
+      rows: 50,
       cwd: session.path,
       env: {
         ...process.env,
         NO_COLOR: '1',
+        FORCE_COLOR: '0',
+        TERM: 'dumb',
+        CI: '1', // Some tools check this for non-interactive mode
       } as { [key: string]: string },
     });
 
@@ -70,20 +77,63 @@ export class SessionManager extends EventEmitter {
     let buffer = '';
 
     proc.onData((data: string) => {
-      console.log(`[${slug}] output (${data.length} bytes):`, data.slice(0, 100));
+      // Emit raw output for debugging
       this.emit('output', slug, data);
 
-      buffer += data;
+      // Clean carriage returns and append to buffer
+      buffer += data.replace(/\r/g, '');
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
+      const running = this.running.get(slug);
+
       for (const line of lines) {
         if (!line.trim()) continue;
+
+        // Format and emit the event
+        const formatted = formatEvent(line);
+        if (formatted) {
+          // Deduplicate text/thinking events with same summary
+          if ((formatted.category === 'text' || formatted.category === 'thinking') && running) {
+            if (formatted.summary === running.lastTextSummary) {
+              continue; // Skip duplicate
+            }
+            running.lastTextSummary = formatted.summary;
+          }
+
+          console.log(`[${slug}] ${formatted.category}: ${formatted.summary}`);
+          this.emit('formatted_event', slug, formatted);
+
+          // Extract session ID from init events
+          if (formatted.category === 'init' && formatted.sessionId) {
+            const session = this.store.get(slug);
+            if (session && !session.claudeSessionId) {
+              this.store.update(slug, { claudeSessionId: formatted.sessionId });
+            }
+          }
+
+          // Update state based on event type
+          if (formatted.category === 'tool_use') {
+            this.store.update(slug, { state: 'working' });
+            this.emit('state_change', slug, 'working');
+          } else if (formatted.category === 'thinking' || formatted.category === 'text') {
+            this.store.update(slug, { state: 'thinking' });
+            this.emit('state_change', slug, 'thinking');
+          } else if (formatted.category === 'result') {
+            // Result means Claude finished - check if waiting for input
+            if (formatted.isActionable) {
+              this.store.update(slug, { state: 'waiting' });
+              this.emit('state_change', slug, 'waiting');
+            }
+          }
+        }
+
+        // Also try to parse as JSON for legacy handling
         try {
           const event = JSON.parse(line);
           this.handleClaudeEvent(slug, event);
         } catch {
-          // Non-JSON output, might be status messages
+          // Non-JSON output
         }
       }
     });

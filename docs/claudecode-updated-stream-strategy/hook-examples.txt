@@ -1,0 +1,94 @@
+# Claude Code Hook Configuration
+# ================================
+
+# Option 1: Add to ~/.claude/settings.json
+# -----------------------------------------
+
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "command": ["bash", "-c", "jq -c '{event:\"waiting\",time:now|todate,reason:.stop_reason}' >> ~/.claude/waiting.jsonl"]
+      }
+    ]
+  }
+}
+
+# Option 2: Inline one-liner (for quick testing via /hooks command)
+# ------------------------------------------------------------------
+# Matcher: *
+# Command: bash -c 'echo "{\"waiting\":true,\"at\":\"$(date -Iseconds)\"}" >> /tmp/claude-waiting.jsonl'
+
+
+# Option 3: Named pipe for real-time streaming
+# ---------------------------------------------
+
+# Setup (run once):
+#   mkfifo /tmp/claude-events
+
+# Hook command:
+#   bash -c 'cat >> /tmp/claude-events'
+
+# Reader (separate terminal):
+#   cat /tmp/claude-events | jq -c .
+
+
+# Option 4: Webhook/HTTP notification
+# ------------------------------------
+
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*", 
+        "command": [
+          "bash", "-c",
+          "curl -s -X POST http://localhost:8080/claude-event -H 'Content-Type: application/json' -d \"$(cat)\""
+        ]
+      }
+    ]
+  }
+}
+
+
+# Available Hook Events
+# =====================
+# 
+# - PreToolUse      : Before a tool runs (can block/modify)
+# - PostToolUse     : After a tool completes  
+# - UserPromptSubmit: When user sends a message
+# - Stop            : When Claude stops (end_turn = waiting for input)
+# - SubagentStop    : When a subagent completes
+# - Notification    : General Claude Code notifications
+#
+# Hook Input (stdin JSON):
+# ------------------------
+# PreToolUse:  {tool_name, tool_input, tool_use_id, transcript_path}
+# PostToolUse: {tool_name, tool_output, tool_use_id, transcript_path}  
+# Stop:        {stop_reason, transcript_path}
+#              stop_reason: "end_turn" | "tool_use" | "max_tokens" | ...
+#
+# For "waiting for input": stop_reason === "end_turn"
+
+
+# Minimal "Am I Waiting?" Detector
+# ================================
+
+#!/usr/bin/env bash
+# Save as: ~/.claude/hooks/waiting.sh
+# Hook on: Stop
+
+read -r input
+reason=$(echo "$input" | jq -r '.stop_reason')
+
+if [[ "$reason" == "end_turn" ]]; then
+    # Do your thing here
+    echo "WAITING $(date -Iseconds)" >> /tmp/claude-waiting.log
+    
+    # Or ring a bell
+    # tput bel
+    
+    # Or send to a websocket
+    # websocat ws://localhost:9000 <<< '{"waiting":true}'
+fi

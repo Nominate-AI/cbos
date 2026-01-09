@@ -1,13 +1,17 @@
 """WebSocket streaming infrastructure for CBOS"""
 
 import asyncio
-from typing import Optional
+import time
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
 
 from ..core.stream import StreamEvent
 from ..core.logging import get_logger
+
+if TYPE_CHECKING:
+    from ..core.json_manager import ClaudeEvent, JSONSessionState
 
 logger = get_logger("websocket")
 
@@ -171,6 +175,87 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
             except Exception:
+                dead_clients.append(websocket)
+
+        # Clean up dead clients
+        if dead_clients:
+            async with self._lock:
+                for ws in dead_clients:
+                    self._connections.pop(ws, None)
+
+    async def broadcast_json_event(self, slug: str, event: "ClaudeEvent") -> None:
+        """
+        Broadcast a JSON Claude event to subscribed clients.
+
+        Args:
+            slug: Session identifier
+            event: The ClaudeEvent to broadcast
+        """
+        if not self._connections:
+            return
+
+        message = {
+            "type": "claude_event",
+            "session": slug,
+            "event": event.to_dict(),
+            "ts": time.time(),
+        }
+
+        dead_clients: list[WebSocket] = []
+
+        async with self._lock:
+            clients = list(self._connections.items())
+
+        for websocket, client in clients:
+            # Check if client is subscribed to this session
+            if not client.subscribe_all and slug not in client.subscriptions:
+                continue
+
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send JSON event to client: {e}")
+                dead_clients.append(websocket)
+
+        # Clean up dead clients
+        if dead_clients:
+            async with self._lock:
+                for ws in dead_clients:
+                    self._connections.pop(ws, None)
+            logger.debug(f"Removed {len(dead_clients)} dead clients")
+
+    async def broadcast_json_state(self, slug: str, state: "JSONSessionState") -> None:
+        """
+        Broadcast a JSON session state change to subscribed clients.
+
+        Args:
+            slug: Session identifier
+            state: The new session state
+        """
+        if not self._connections:
+            return
+
+        message = {
+            "type": "json_state",
+            "session": slug,
+            "state": state.value,
+            "ts": time.time(),
+        }
+
+        dead_clients: list[WebSocket] = []
+
+        async with self._lock:
+            clients = list(self._connections.items())
+
+        for websocket, client in clients:
+            # Check if client is subscribed to this session
+            if not client.subscribe_all and slug not in client.subscriptions:
+                continue
+
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.debug(f"Failed to send JSON state to client: {e}")
                 dead_clients.append(websocket)
 
         # Clean up dead clients

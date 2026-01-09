@@ -166,6 +166,13 @@ class CreateSessionScreen(ModalScreen[dict | None]):
         padding-bottom: 1;
     }
 
+    #mode-info {
+        text-align: center;
+        padding: 0 1;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+
     #project-list {
         height: 1fr;
     }
@@ -202,6 +209,7 @@ class CreateSessionScreen(ModalScreen[dict | None]):
         with Vertical(id="create-dialog"):
             yield Label("Create New Session", id="create-title")
             yield Rule()
+            yield Static("[cyan]JSON Streaming Mode[/cyan] - Structured output via Claude API", id="mode-info")
             yield ListView(id="project-list")
             yield Static(id="page-info")
             yield Static("Enter=Select │ n/p=Page │ Esc=Cancel", id="create-footer")
@@ -231,6 +239,7 @@ class CreateSessionScreen(ModalScreen[dict | None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle project selection"""
         if isinstance(event.item, ProjectItem):
+            # All sessions are now JSON mode
             self.dismiss(event.item.project)
 
     def action_cancel(self) -> None:
@@ -613,7 +622,7 @@ class CBOSApp(App):
         msg_type = data.get("type", "")
 
         if msg_type == "stream":
-            # Real-time stream data
+            # Real-time stream data (screen-based sessions)
             session = data.get("session", "")
             content = data.get("data", "")
             is_snapshot = data.get("snapshot", False)
@@ -640,6 +649,52 @@ class CBOSApp(App):
                 if session == self.selected_slug:
                     self._update_buffer_from_stream(session)
 
+        elif msg_type == "claude_event":
+            # JSON session event
+            session = data.get("session", "")
+            event = data.get("event", {})
+
+            if session and event:
+                # Format the event for display
+                formatted = self._format_claude_event(event)
+
+                if formatted:
+                    # Append to buffer
+                    current = self._stream_buffers.get(session, "")
+                    new_buffer = current + formatted
+
+                    # Trim to max size
+                    if len(new_buffer) > MAX_BUFFER_SIZE:
+                        new_buffer = new_buffer[-MAX_BUFFER_SIZE:]
+
+                    self._stream_buffers[session] = new_buffer
+
+                    # Update display if this is the selected session
+                    if session == self.selected_slug:
+                        self._update_buffer_from_stream(session)
+
+        elif msg_type == "json_state":
+            # JSON session state change
+            session = data.get("session", "")
+            state = data.get("state", "")
+
+            if session and state:
+                # Update session state in local list
+                for s in self.sessions:
+                    if s.get("slug") == session:
+                        # Map JSON session states to screen states for display
+                        state_map = {
+                            "idle": "idle",
+                            "running": "working",
+                            "complete": "idle",
+                            "error": "error",
+                        }
+                        s["state"] = state_map.get(state, "unknown")
+                        break
+
+                # Refresh display
+                self._update_session_list(self.sessions)
+
         elif msg_type == "sessions":
             # Session list update
             sessions = data.get("sessions", [])
@@ -650,6 +705,59 @@ class CBOSApp(App):
             # Subscription confirmation
             subscribed = data.get("sessions", [])
             self.notify(f"Subscribed to: {subscribed}", timeout=2)
+
+    def _format_claude_event(self, event: dict) -> str:
+        """Format a Claude JSON event for display in the buffer"""
+        event_type = event.get("type", "")
+        data = event.get("data", {})
+
+        if event_type == "init":
+            session_id = data.get("session_id", "")[:8]
+            return f"\n[Session started: {session_id}...]\n"
+
+        elif event_type == "user":
+            message = data.get("message", "")
+            return f"\n> {message}\n"
+
+        elif event_type == "assistant":
+            message = data.get("message", {})
+            content = message.get("content", "") if isinstance(message, dict) else str(message)
+            return f"\n{content}\n"
+
+        elif event_type == "tool_use":
+            tool = data.get("tool", {})
+            name = tool.get("name", "unknown")
+            tool_input = tool.get("input", {})
+            # Show abbreviated input
+            input_str = str(tool_input)
+            if len(input_str) > 80:
+                input_str = input_str[:80] + "..."
+            return f"\n◐ {name}({input_str})\n"
+
+        elif event_type == "tool_result":
+            result = data.get("result", "")
+            preview = str(result)[:100]
+            if len(str(result)) > 100:
+                preview += "..."
+            return f"  ✓ {preview}\n"
+
+        elif event_type == "result":
+            subtype = data.get("subtype", "")
+            cost = data.get("cost_usd", 0)
+            duration = data.get("duration_ms", 0)
+            return f"\n[{subtype.upper()}] Cost: ${cost:.4f}, Duration: {duration/1000:.1f}s\n"
+
+        elif event_type == "error":
+            message = data.get("message", "Unknown error")
+            return f"\n[ERROR] {message}\n"
+
+        elif event_type == "raw":
+            content = data.get("content", "")
+            return f"{content}\n"
+
+        else:
+            # Unknown event type
+            return ""
 
     def _update_status_bar(self) -> None:
         """Update subtitle with connection status"""
@@ -998,7 +1106,7 @@ class CBOSApp(App):
 
     @work(thread=True)
     def _create_session(self, project: dict) -> None:
-        """Create a new session via API"""
+        """Create a new JSON streaming session via API"""
         import httpx as sync_httpx
 
         slug = project["name"]
@@ -1012,6 +1120,7 @@ class CBOSApp(App):
 
         try:
             with sync_httpx.Client(base_url=API_BASE, timeout=30) as client:
+                # All sessions are now JSON streaming mode
                 resp = client.post(
                     "/sessions",
                     json={"slug": slug, "path": path}
@@ -1020,7 +1129,7 @@ class CBOSApp(App):
 
                 self.call_from_thread(
                     self.notify,
-                    f"Created session: {slug}",
+                    f"Created session: {slug} (type a prompt to start)",
                     timeout=3
                 )
 
