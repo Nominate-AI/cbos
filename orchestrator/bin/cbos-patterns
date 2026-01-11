@@ -1,0 +1,14 @@
+#!/bin/bash
+# Run cbos-patterns CLI from anywhere
+# Uses tinymachines environment (Python 3.13.3) with vectl
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CBOS_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Activate tinymachines environment
+source ~/.pyenv/versions/tinymachines/bin/activate
+
+# Add vectl to PYTHONPATH
+export PYTHONPATH="$CBOS_DIR/extern/vectl:$PYTHONPATH"
+
+cd "$CBOS_DIR" && python -m orchestrator.cli "$@"

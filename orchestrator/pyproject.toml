@@ -1,0 +1,23 @@
+[project]
+name = "cbos-orchestrator"
+version = "0.1.0"
+description = "CBOS Orchestrator - Pattern extraction and auto-response for Claude Code sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "httpx>=0.25.0",
+    "rich>=13.0",
+    "websockets>=12.0",
+]
+
+[project.scripts]
+cbos-patterns = "orchestrator.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
