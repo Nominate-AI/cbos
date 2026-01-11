@@ -26,4 +26,3 @@ htmlcov/
 .venv/
 venv/
 *.log
-extern/

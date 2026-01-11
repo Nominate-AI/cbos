@@ -1,0 +1,3 @@
+[submodule "extern/vectl"]
+	path = extern/vectl
+	url = git@github.com:tinymachines/vectl.git
