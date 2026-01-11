@@ -382,6 +382,23 @@ def main():
         "--json", action="store_true", help="Output as JSON"
     )
 
+    # Watch command
+    watch_parser = subparsers.add_parser(
+        "watch", help="Watch all CBOS WebSocket events (no pattern matching)"
+    )
+    watch_parser.add_argument(
+        "-p", "--port", type=int, default=32205,
+        help="CBOS WebSocket port (default: 32205)"
+    )
+    watch_parser.add_argument(
+        "--raw", action="store_true",
+        help="Show raw JSON messages"
+    )
+    watch_parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Hide session state updates"
+    )
+
     # Listen command
     listen_parser = subparsers.add_parser(
         "listen", help="Listen to CBOS sessions and match patterns in real-time"
@@ -419,6 +436,13 @@ def main():
         cmd_search(args)
     elif args.command == "listen":
         asyncio.run(cmd_listen(args))
+    elif args.command == "watch":
+        from .watch import watch
+        asyncio.run(watch(
+            ws_url=f"ws://localhost:{args.port}",
+            raw=args.raw,
+            verbose=not args.quiet,
+        ))
 
 
 if __name__ == "__main__":
