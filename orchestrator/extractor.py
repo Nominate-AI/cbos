@@ -3,12 +3,15 @@
 import json
 import logging
 import re
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Optional
 
 from .config import settings
-from .models import DecisionPattern, ExtractedQuestion, QuestionOption, QuestionType
+from .models import DecisionPattern
+from .models import ExtractedQuestion
+from .models import QuestionOption
+from .models import QuestionType
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +28,11 @@ class DecisionPatternExtractor:
 
     def __init__(
         self,
-        project_filter: Optional[str] = None,
-        after_date: Optional[datetime] = None,
-        before_date: Optional[datetime] = None,
+        project_filter: str | None = None,
+        after_date: datetime | None = None,
+        before_date: datetime | None = None,
         include_thinking: bool = True,
-        context_chars: int = None,
+        context_chars: int | None = None,
     ):
         self.project_filter = project_filter
         self.after_date = after_date
@@ -62,7 +65,7 @@ class DecisionPatternExtractor:
                 continue
             yield jsonl_file
 
-    def parse_timestamp(self, ts: str) -> Optional[datetime]:
+    def parse_timestamp(self, ts: str) -> datetime | None:
         """Parse ISO timestamp string"""
         try:
             ts = ts.replace("Z", "+00:00")
@@ -111,7 +114,7 @@ class DecisionPatternExtractor:
         messages = []
 
         # Load all messages from file
-        with open(session_file, "r", encoding="utf-8") as f:
+        with session_file.open(encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -179,9 +182,7 @@ class DecisionPatternExtractor:
                     question_text=self._combine_questions(questions),
                     question_header=questions[0].header if questions else "",
                     question_type=question_type,
-                    options=[
-                        opt for q in questions for opt in q.options
-                    ],
+                    options=[opt for q in questions for opt in q.options],
                     context_before=context,
                     thinking=thinking,
                     user_answer=answer,
@@ -201,17 +202,21 @@ class DecisionPatternExtractor:
         for q in raw_questions:
             options = []
             for opt in q.get("options", []):
-                options.append(QuestionOption(
-                    label=opt.get("label", ""),
-                    description=opt.get("description", ""),
-                ))
+                options.append(
+                    QuestionOption(
+                        label=opt.get("label", ""),
+                        description=opt.get("description", ""),
+                    )
+                )
 
-            questions.append(ExtractedQuestion(
-                question=q.get("question", ""),
-                header=q.get("header", ""),
-                options=options,
-                multi_select=q.get("multiSelect", False),
-            ))
+            questions.append(
+                ExtractedQuestion(
+                    question=q.get("question", ""),
+                    header=q.get("header", ""),
+                    options=options,
+                    multi_select=q.get("multiSelect", False),
+                )
+            )
 
         return questions
 
@@ -221,7 +226,7 @@ class DecisionPatternExtractor:
         messages: list[dict],
         current_idx: int,
         tool_use_id: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Find the user's answer to the question"""
         # First check if answers are in the tool input itself
         answers = tool_input.get("answers", {})
@@ -237,7 +242,7 @@ class DecisionPatternExtractor:
                 return " | ".join(answer_parts)
 
         # Look for tool_result in subsequent messages
-        for msg in messages[current_idx + 1:]:
+        for msg in messages[current_idx + 1 :]:
             msg_type = msg.get("type")
 
             # Check for user message with tool_result
@@ -247,7 +252,10 @@ class DecisionPatternExtractor:
 
                 if isinstance(content, list):
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                        ):
                             if block.get("tool_use_id") == tool_use_id:
                                 result_content = block.get("content", "")
                                 if result_content:
@@ -297,9 +305,9 @@ class DecisionPatternExtractor:
                 context_parts.insert(0, f"[{role}]: {text[:500]}")
                 chars_collected += len(text[:500])
 
-        return "\n".join(context_parts)[-self.context_chars:]
+        return "\n".join(context_parts)[-self.context_chars :]
 
-    def _extract_thinking(self, content: list) -> Optional[str]:
+    def _extract_thinking(self, content: list) -> str | None:
         """Extract thinking block from content"""
         for block in content:
             if isinstance(block, dict) and block.get("type") == "thinking":

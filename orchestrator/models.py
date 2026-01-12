@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic import Field
 
 
 class QuestionType(str, Enum):
@@ -38,7 +38,7 @@ class ExtractedQuestion(BaseModel):
 class DecisionPattern(BaseModel):
     """A pattern extracted from AskUserQuestion -> response pair"""
 
-    id: Optional[int] = None
+    id: int | None = None
 
     # Source
     project: str
@@ -53,14 +53,14 @@ class DecisionPattern(BaseModel):
 
     # Context
     context_before: str = ""  # Text before the question
-    thinking: Optional[str] = None  # Claude's thinking
+    thinking: str | None = None  # Claude's thinking
 
     # Response
     user_answer: str
     is_selected_option: bool = False  # True if answer was from options
 
     # Vector (not stored in model, loaded separately)
-    embedding: Optional[list[float]] = Field(default=None, exclude=True)
+    embedding: list[float] | None = Field(default=None, exclude=True)
 
     # Timestamps
     timestamp: datetime
@@ -81,4 +81,4 @@ class PatternStats(BaseModel):
     patterns_with_embeddings: int = 0
     question_types: dict[str, int] = Field(default_factory=dict)
     projects: dict[str, int] = Field(default_factory=dict)
-    date_range: tuple[Optional[str], Optional[str]] = (None, None)
+    date_range: tuple[str | None, str | None] = (None, None)

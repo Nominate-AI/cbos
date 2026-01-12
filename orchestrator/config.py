@@ -1,6 +1,7 @@
 """Configuration for the CBOS Orchestrator"""
 
 from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -37,8 +38,8 @@ class OrchestratorSettings(BaseSettings):
     # WebSocket Listener
     listener_port: int = 32205
     auto_answer_threshold: float = 0.95  # Confidence for auto-answering
-    suggestion_threshold: float = 0.80   # Confidence for suggestions
-    auto_answer_enabled: bool = False    # Disabled by default for safety
+    suggestion_threshold: float = 0.80  # Confidence for suggestions
+    auto_answer_enabled: bool = False  # Disabled by default for safety
 
     model_config = {"env_prefix": "CBOS_ORCHESTRATOR_"}
 

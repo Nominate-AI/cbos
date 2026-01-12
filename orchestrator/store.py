@@ -2,12 +2,14 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .config import settings
 from .database import PatternDatabase
 from .embeddings import CBAIClient
-from .models import DecisionPattern, PatternMatch, PatternStats, QuestionType
+from .models import DecisionPattern
+from .models import PatternMatch
+from .models import PatternStats
+from .models import QuestionType
 from .vectors import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -22,9 +24,9 @@ class PatternStore:
 
     def __init__(
         self,
-        db_path: Optional[Path] = None,
-        vector_store_path: Optional[Path] = None,
-        cbai_url: Optional[str] = None,
+        db_path: Path | None = None,
+        vector_store_path: Path | None = None,
+        cbai_url: str | None = None,
     ):
         self.db = PatternDatabase(db_path)
         self.vectors = VectorStore(store_path=vector_store_path)
@@ -43,7 +45,7 @@ class PatternStore:
         logger.info("PatternStore closed")
 
     def add_pattern(
-        self, pattern: DecisionPattern, embedding: Optional[list[float]] = None
+        self, pattern: DecisionPattern, embedding: list[float] | None = None
     ) -> int:
         """
         Add a pattern to the store.
@@ -60,7 +62,9 @@ class PatternStore:
 
         # Store embedding in vectl if provided
         if embedding:
-            metadata = pattern.question_text[:200]  # Store truncated question as metadata
+            metadata = pattern.question_text[
+                :200
+            ]  # Store truncated question as metadata
             self.vectors.add_vector(pattern_id, embedding, metadata)
 
         return pattern_id
@@ -90,7 +94,7 @@ class PatternStore:
     async def add_patterns_batch(
         self,
         patterns: list[DecisionPattern],
-        batch_size: int = None,
+        batch_size: int | None = None,
         generate_embeddings: bool = True,
     ) -> int:
         """
@@ -109,12 +113,10 @@ class PatternStore:
 
         if generate_embeddings:
             # Generate embeddings in batches via CBAI
-            texts = [
-                f"{p.question_text}\n{p.context_before[:200]}" for p in patterns
-            ]
+            texts = [f"{p.question_text}\n{p.context_before[:200]}" for p in patterns]
             embeddings = await self.cbai_client.embed_batch(texts, batch_size)
 
-            for pattern, embedding in zip(patterns, embeddings):
+            for pattern, embedding in zip(patterns, embeddings, strict=False):
                 try:
                     self.add_pattern(pattern, embedding)
                     added += 1
@@ -133,10 +135,10 @@ class PatternStore:
     def query_similar(
         self,
         query_embedding: list[float],
-        threshold: float = None,
-        max_results: int = None,
-        question_type: Optional[QuestionType] = None,
-        project_filter: Optional[str] = None,
+        threshold: float | None = None,
+        max_results: int | None = None,
+        question_type: QuestionType | None = None,
+        project_filter: str | None = None,
     ) -> list[PatternMatch]:
         """
         Find patterns similar to a query embedding using vectl K-means search.
@@ -173,10 +175,12 @@ class PatternStore:
             if project_filter and project_filter.lower() not in pattern.project.lower():
                 continue
 
-            matches.append(PatternMatch(
-                pattern=pattern,
-                similarity=round(similarity, 4),
-            ))
+            matches.append(
+                PatternMatch(
+                    pattern=pattern,
+                    similarity=round(similarity, 4),
+                )
+            )
 
             if len(matches) >= max_results:
                 break
@@ -186,10 +190,10 @@ class PatternStore:
     async def query_similar_text(
         self,
         query_text: str,
-        threshold: float = None,
-        max_results: int = None,
-        question_type: Optional[QuestionType] = None,
-        project_filter: Optional[str] = None,
+        threshold: float | None = None,
+        max_results: int | None = None,
+        question_type: QuestionType | None = None,
+        project_filter: str | None = None,
     ) -> list[PatternMatch]:
         """
         Find patterns similar to a query text.
@@ -233,14 +237,13 @@ class PatternStore:
         """
         return self.db.search_text(query, limit)
 
-    def get_pattern(self, pattern_id: int) -> Optional[DecisionPattern]:
+    def get_pattern(self, pattern_id: int) -> DecisionPattern | None:
         """Get a pattern by ID"""
         return self.db.get_pattern(pattern_id)
 
     def get_stats(self) -> PatternStats:
         """Get statistics about the pattern store"""
         db_stats = self.db.get_stats()
-        vector_stats = self.vectors.get_stats()
 
         return PatternStats(
             total_patterns=db_stats["total"],
@@ -254,7 +257,7 @@ class PatternStore:
         """Get vectl-specific statistics"""
         return self.vectors.get_stats()
 
-    async def rebuild_embeddings(self, batch_size: int = None) -> int:
+    async def rebuild_embeddings(self, batch_size: int | None = None) -> int:
         """
         Regenerate all embeddings via CBAI and store in vectl.
 
@@ -266,13 +269,11 @@ class PatternStore:
         batch_size = batch_size or settings.batch_size
         patterns = self.db.get_all_patterns()
 
-        texts = [
-            f"{p.question_text}\n{p.context_before[:200]}" for p in patterns
-        ]
+        texts = [f"{p.question_text}\n{p.context_before[:200]}" for p in patterns]
         embeddings = await self.cbai_client.embed_batch(texts, batch_size)
 
         updated = 0
-        for pattern, embedding in zip(patterns, embeddings):
+        for pattern, embedding in zip(patterns, embeddings, strict=False):
             if embedding and pattern.id:
                 metadata = pattern.question_text[:200]
                 self.vectors.add_vector(pattern.id, embedding, metadata)

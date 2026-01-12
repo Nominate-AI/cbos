@@ -2,10 +2,9 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
+from vector_cluster_store_py import VectorClusterStore
 from vector_store import create_store
-from vector_cluster_store_py import VectorClusterStore, Logger as VectlLogger
 
 from .config import settings
 
@@ -22,16 +21,16 @@ class VectorStore:
 
     def __init__(
         self,
-        store_path: Optional[Path] = None,
-        vector_dim: int = None,
-        num_clusters: int = None,
-        log_path: Optional[Path] = None,
+        store_path: Path | None = None,
+        vector_dim: int | None = None,
+        num_clusters: int | None = None,
+        log_path: Path | None = None,
     ):
         self.store_path = store_path or settings.vector_store_path
         self.vector_dim = vector_dim or settings.vector_dim
         self.num_clusters = num_clusters or settings.num_clusters
         self.log_path = log_path or settings.vector_log_path
-        self._store: Optional[VectorClusterStore] = None
+        self._store: VectorClusterStore | None = None
         self._vector_count: int = 0
 
     def connect(self) -> None:
@@ -111,7 +110,7 @@ class VectorStore:
 
         return self._store.find_similar_vectors(query_embedding, k)
 
-    def get_vector(self, vector_id: int) -> Optional[list[float]]:
+    def get_vector(self, vector_id: int) -> list[float] | None:
         """
         Retrieve embedding by vector ID.
 

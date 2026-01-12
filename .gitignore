@@ -1,7 +1,10 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -18,11 +21,27 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Testing
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Type checking / Linting
 .mypy_cache/
+.ruff_cache/
+
+# Environment
 .env
 .venv/
 venv/
+
+# Logs
 *.log
+
+# Claude Code
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,50 +1,28 @@
 # CBOS Documentation
 
-CBOS (Claude Code Operating System) is a session manager for running multiple Claude Code instances via GNU Screen.
+CBOS (Claude Code Operating System) is a session manager for running multiple Claude Code instances with real-time streaming, WebSocket API, and terminal UI.
 
 ## Quick Start
 
+See the main [README.md](../README.md) for installation and usage instructions.
+
 ```bash
-# Check API status (already running as systemd service)
+# Check API status (running as systemd service)
 sudo systemctl status cbos
 
 # Launch the TUI
 cbos
-
-# Or run via Python
-python -m cbos.tui.app
 ```
 
-## API Endpoints
+## Documentation Structure
 
-Base URL: `http://127.0.0.1:32900`
+| Document | Description |
+|----------|-------------|
+| [QUICK-START.md](QUICK-START.md) | Getting started guide |
+| [ORCHESTRATOR-USAGE.md](ORCHESTRATOR-USAGE.md) | Pattern orchestrator CLI usage |
+| [CONVERSATION-FEATURES.md](CONVERSATION-FEATURES.md) | Conversation feature documentation |
+| [orchestrator/](orchestrator/) | Orchestrator implementation details |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/sessions` | GET | List all sessions |
-| `/sessions/status` | GET | Summary status counts |
-| `/sessions/waiting` | GET | Sessions waiting for input |
-| `/sessions/{slug}` | GET | Get session details |
-| `/sessions` | POST | Create new session |
-| `/sessions/{slug}` | DELETE | Kill session |
-| `/sessions/{slug}/send` | POST | Send input |
-| `/sessions/{slug}/interrupt` | POST | Send Ctrl+C |
-| `/sessions/{slug}/buffer` | GET | Get buffer content |
-| `/ws` | WebSocket | Real-time updates |
+## Archived Documentation
 
-## TUI Keybindings
-
-| Key | Action |
-|-----|--------|
-| `j/k` | Navigate sessions |
-| `Enter` | Focus input field |
-| `Escape` | Back to session list |
-| `r` | Refresh |
-| `Ctrl+C` | Interrupt selected session |
-| `a` | Show attach command |
-| `q` | Quit |
-
-## Documentation
-
-- [START-HERE.md](START-HERE.md) - Screen management guide
-- [MVP-PLAN.md](MVP-PLAN.md) - Architecture and implementation plan
+Historical planning and strategy documents are in [archive/](archive/).

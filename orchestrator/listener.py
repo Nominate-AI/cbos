@@ -7,8 +7,9 @@ matching them against the pattern store for auto-answering or suggestions.
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional, Callable, Awaitable
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -22,17 +23,19 @@ logger = logging.getLogger(__name__)
 @dataclass
 class QuestionEvent:
     """Parsed question event from WebSocket"""
+
     slug: str
     question_text: str
     options: list[str]
     context: str
     timestamp: str
-    tool_input: Optional[str] = None
+    tool_input: str | None = None
 
 
 @dataclass
 class SessionUpdate:
     """Session state update from WebSocket"""
+
     slug: str
     state: str
     message_count: int
@@ -53,16 +56,20 @@ class OrchestratorListener:
 
     def __init__(
         self,
-        ws_url: Optional[str] = None,
-        store: Optional[PatternStore] = None,
-        auto_answer_threshold: float = None,
-        suggestion_threshold: float = None,
+        ws_url: str | None = None,
+        store: PatternStore | None = None,
+        auto_answer_threshold: float | None = None,
+        suggestion_threshold: float | None = None,
         auto_answer_enabled: bool = True,
     ):
         self.ws_url = ws_url or f"ws://localhost:{settings.listener_port}"
         self.store = store
-        self.auto_answer_threshold = auto_answer_threshold or settings.auto_answer_threshold
-        self.suggestion_threshold = suggestion_threshold or settings.suggestion_threshold
+        self.auto_answer_threshold = (
+            auto_answer_threshold or settings.auto_answer_threshold
+        )
+        self.suggestion_threshold = (
+            suggestion_threshold or settings.suggestion_threshold
+        )
         self.auto_answer_enabled = auto_answer_enabled
 
         self._ws = None
@@ -71,12 +78,12 @@ class OrchestratorListener:
         self._max_reconnect_delay = 30.0
 
         # Event callbacks
-        self.on_connect: Optional[Callable[[], Awaitable[None]]] = None
-        self.on_disconnect: Optional[Callable[[], Awaitable[None]]] = None
-        self.on_question: Optional[Callable[[QuestionEvent], Awaitable[None]]] = None
-        self.on_suggestion: Optional[Callable[[str, str, float], Awaitable[None]]] = None
-        self.on_auto_answer: Optional[Callable[[str, str], Awaitable[None]]] = None
-        self.on_session_update: Optional[Callable[[SessionUpdate], Awaitable[None]]] = None
+        self.on_connect: Callable[[], Awaitable[None]] | None = None
+        self.on_disconnect: Callable[[], Awaitable[None]] | None = None
+        self.on_question: Callable[[QuestionEvent], Awaitable[None]] | None = None
+        self.on_suggestion: Callable[[str, str, float], Awaitable[None]] | None = None
+        self.on_auto_answer: Callable[[str, str], Awaitable[None]] | None = None
+        self.on_session_update: Callable[[SessionUpdate], Awaitable[None]] | None = None
 
     async def connect(self) -> None:
         """Connect to CBOS WebSocket server"""
@@ -93,10 +100,7 @@ class OrchestratorListener:
             )
 
             # Subscribe to all sessions
-            await self._ws.send(json.dumps({
-                "type": "subscribe",
-                "sessions": ["*"]
-            }))
+            await self._ws.send(json.dumps({"type": "subscribe", "sessions": ["*"]}))
 
             logger.info(f"Connected to CBOS server at {self.ws_url}")
 
@@ -131,8 +135,7 @@ class OrchestratorListener:
                     logger.info(f"Reconnecting in {self._reconnect_delay}s...")
                     await asyncio.sleep(self._reconnect_delay)
                     self._reconnect_delay = min(
-                        self._reconnect_delay * 1.5,
-                        self._max_reconnect_delay
+                        self._reconnect_delay * 1.5, self._max_reconnect_delay
                     )
                     self._ws = None
 
@@ -193,7 +196,9 @@ class OrchestratorListener:
             tool_input=event.get("toolInput"),
         )
 
-        logger.info(f"[{slug}] Question detected: {question_event.question_text[:60]}...")
+        logger.info(
+            f"[{slug}] Question detected: {question_event.question_text[:60]}..."
+        )
 
         # Notify callback
         if self.on_question:
@@ -268,7 +273,9 @@ class OrchestratorListener:
 
             # Medium confidence: suggest
             elif similarity >= self.suggestion_threshold:
-                logger.info(f"[{slug}] Suggestion (confidence: {similarity:.1%}): {suggested_answer}")
+                logger.info(
+                    f"[{slug}] Suggestion (confidence: {similarity:.1%}): {suggested_answer}"
+                )
 
                 if self.on_suggestion:
                     await self.on_suggestion(slug, suggested_answer, similarity)
@@ -286,11 +293,9 @@ class OrchestratorListener:
         if not answer.endswith("\n"):
             answer = answer + "\n"
 
-        await self._ws.send(json.dumps({
-            "type": "send_input",
-            "slug": slug,
-            "text": answer
-        }))
+        await self._ws.send(
+            json.dumps({"type": "send_input", "slug": slug, "text": answer})
+        )
 
         logger.info(f"[{slug}] Sent answer: {answer.strip()}")
 
@@ -313,9 +318,9 @@ class OrchestratorListener:
 
 
 async def run_listener(
-    ws_url: str = None,
-    auto_answer_threshold: float = None,
-    suggestion_threshold: float = None,
+    ws_url: str | None = None,
+    auto_answer_threshold: float | None = None,
+    suggestion_threshold: float | None = None,
     auto_answer_enabled: bool = True,
     verbose: bool = False,
 ) -> None:

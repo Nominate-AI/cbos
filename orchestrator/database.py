@@ -3,13 +3,13 @@
 import json
 import logging
 import sqlite3
-import struct
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from .config import settings
-from .models import DecisionPattern, QuestionOption, QuestionType
+from .models import DecisionPattern
+from .models import QuestionOption
+from .models import QuestionType
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +44,9 @@ CREATE INDEX IF NOT EXISTS idx_patterns_timestamp ON patterns(timestamp);
 class PatternDatabase:
     """SQLite database for pattern storage"""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or settings.pattern_db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
 
     def connect(self) -> None:
         """Initialize database connection and create schema"""
@@ -74,7 +74,7 @@ class PatternDatabase:
         return self._conn
 
     def insert_pattern(
-        self, pattern: DecisionPattern, embedding: Optional[list[float]] = None
+        self, pattern: DecisionPattern, embedding: list[float] | None = None
     ) -> int:
         """Insert a pattern into the database, returns pattern ID.
 
@@ -109,7 +109,7 @@ class PatternDatabase:
         self.conn.commit()
         return cursor.lastrowid
 
-    def get_pattern(self, pattern_id: int) -> Optional[DecisionPattern]:
+    def get_pattern(self, pattern_id: int) -> DecisionPattern | None:
         """Get a pattern by ID"""
         row = self.conn.execute(
             "SELECT * FROM patterns WHERE id = ?", (pattern_id,)
@@ -139,9 +139,9 @@ class PatternDatabase:
         stats = {}
 
         # Total count
-        stats["total"] = self.conn.execute(
-            "SELECT COUNT(*) FROM patterns"
-        ).fetchone()[0]
+        stats["total"] = self.conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[
+            0
+        ]
 
         # By question type
         type_rows = self.conn.execute(

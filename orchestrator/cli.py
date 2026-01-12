@@ -4,7 +4,6 @@
 import argparse
 import asyncio
 import json
-import sys
 from datetime import datetime
 
 from rich.console import Console
@@ -165,9 +164,7 @@ def cmd_stats(args):
         console.print("[bold]Pattern Database Statistics[/bold]\n")
 
         console.print(f"Total patterns: [cyan]{stats.total_patterns}[/cyan]")
-        console.print(
-            f"With embeddings: [cyan]{stats.patterns_with_embeddings}[/cyan]"
-        )
+        console.print(f"With embeddings: [cyan]{stats.patterns_with_embeddings}[/cyan]")
 
         # Vector store info
         console.print("\n[bold]Vector Store (vectl):[/bold]")
@@ -175,7 +172,9 @@ def cmd_stats(args):
         console.print(f"  Dimensions: [cyan]{vector_stats['vector_dim']}[/cyan]")
         console.print(f"  Clusters: [cyan]{vector_stats['num_clusters']}[/cyan]")
         console.print(f"  File size: [cyan]{vector_stats['file_size_mb']} MB[/cyan]")
-        console.print(f"  Connected: [{'green' if vector_stats['is_connected'] else 'red'}]{vector_stats['is_connected']}[/]")
+        console.print(
+            f"  Connected: [{'green' if vector_stats['is_connected'] else 'red'}]{vector_stats['is_connected']}[/]"
+        )
 
         if stats.date_range[0]:
             console.print(
@@ -205,7 +204,9 @@ async def cmd_listen(args):
 
     console.print("[bold blue]Starting orchestrator listener...[/bold blue]")
     console.print(f"Connecting to: [cyan]ws://localhost:{args.port}[/cyan]")
-    console.print(f"Auto-answer: [{'green' if args.auto_answer else 'yellow'}]{args.auto_answer}[/]")
+    console.print(
+        f"Auto-answer: [{'green' if args.auto_answer else 'yellow'}]{args.auto_answer}[/]"
+    )
     console.print(f"Auto-answer threshold: [cyan]{args.auto_threshold:.0%}[/cyan]")
     console.print(f"Suggestion threshold: [cyan]{args.suggest_threshold:.0%}[/cyan]")
     console.print()
@@ -362,15 +363,11 @@ def main():
     query_parser.add_argument(
         "-p", "--project", type=str, help="Filter by project name"
     )
-    query_parser.add_argument(
-        "--json", action="store_true", help="Output as JSON"
-    )
+    query_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     # Stats command
     stats_parser = subparsers.add_parser("stats", help="Show pattern statistics")
-    stats_parser.add_argument(
-        "--json", action="store_true", help="Output as JSON"
-    )
+    stats_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     # Search command
     search_parser = subparsers.add_parser("search", help="Text search patterns")
@@ -378,25 +375,24 @@ def main():
     search_parser.add_argument(
         "-l", "--limit", type=int, default=20, help="Maximum results"
     )
-    search_parser.add_argument(
-        "--json", action="store_true", help="Output as JSON"
-    )
+    search_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     # Watch command
     watch_parser = subparsers.add_parser(
         "watch", help="Watch all CBOS WebSocket events (no pattern matching)"
     )
     watch_parser.add_argument(
-        "-p", "--port", type=int, default=32205,
-        help="CBOS WebSocket port (default: 32205)"
+        "-p",
+        "--port",
+        type=int,
+        default=32205,
+        help="CBOS WebSocket port (default: 32205)",
     )
     watch_parser.add_argument(
-        "--raw", action="store_true",
-        help="Show raw JSON messages"
+        "--raw", action="store_true", help="Show raw JSON messages"
     )
     watch_parser.add_argument(
-        "-q", "--quiet", action="store_true",
-        help="Hide session state updates"
+        "-q", "--quiet", action="store_true", help="Hide session state updates"
     )
 
     # Listen command
@@ -404,24 +400,31 @@ def main():
         "listen", help="Listen to CBOS sessions and match patterns in real-time"
     )
     listen_parser.add_argument(
-        "-p", "--port", type=int, default=32205,
-        help="CBOS WebSocket port (default: 32205)"
+        "-p",
+        "--port",
+        type=int,
+        default=32205,
+        help="CBOS WebSocket port (default: 32205)",
     )
     listen_parser.add_argument(
-        "--auto-answer", action="store_true",
-        help="Enable auto-answering for high-confidence matches"
+        "--auto-answer",
+        action="store_true",
+        help="Enable auto-answering for high-confidence matches",
     )
     listen_parser.add_argument(
-        "--auto-threshold", type=float, default=0.95,
-        help="Similarity threshold for auto-answering (default: 0.95)"
+        "--auto-threshold",
+        type=float,
+        default=0.95,
+        help="Similarity threshold for auto-answering (default: 0.95)",
     )
     listen_parser.add_argument(
-        "--suggest-threshold", type=float, default=0.80,
-        help="Similarity threshold for suggestions (default: 0.80)"
+        "--suggest-threshold",
+        type=float,
+        default=0.80,
+        help="Similarity threshold for suggestions (default: 0.80)",
     )
     listen_parser.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="Show all session updates"
+        "-v", "--verbose", action="store_true", help="Show all session updates"
     )
 
     args = parser.parse_args()
@@ -438,11 +441,14 @@ def main():
         asyncio.run(cmd_listen(args))
     elif args.command == "watch":
         from .watch import watch
-        asyncio.run(watch(
-            ws_url=f"ws://localhost:{args.port}",
-            raw=args.raw,
-            verbose=not args.quiet,
-        ))
+
+        asyncio.run(
+            watch(
+                ws_url=f"ws://localhost:{args.port}",
+                raw=args.raw,
+                verbose=not args.quiet,
+            )
+        )
 
 
 if __name__ == "__main__":

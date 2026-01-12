@@ -5,7 +5,6 @@ Ported from archive/cbos/intelligence/client.py and embeddings.py
 
 import logging
 import math
-from typing import Optional
 
 import httpx
 
@@ -19,7 +18,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b):
         return 0.0
 
-    dot_product = sum(x * y for x, y in zip(a, b))
+    dot_product = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
 
@@ -32,7 +31,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 class CBAIClient:
     """Client for the CBAI unified AI service - embedding functionality"""
 
-    def __init__(self, base_url: Optional[str] = None):
+    def __init__(self, base_url: str | None = None):
         self.base_url = (base_url or settings.cbai_url).rstrip("/")
         self.timeout = settings.request_timeout
 
@@ -82,7 +81,7 @@ class CBAIClient:
                     # Batch of embeddings
                     all_embeddings.extend(result)
             except Exception as e:
-                logger.error(f"Failed to embed batch {i}-{i+len(batch)}: {e}")
+                logger.error(f"Failed to embed batch {i}-{i + len(batch)}: {e}")
                 # Add None placeholders for failed embeddings
                 all_embeddings.extend([None] * len(batch))
 
