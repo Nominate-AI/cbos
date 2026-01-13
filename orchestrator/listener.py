@@ -15,6 +15,8 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .config import settings
+from .skill_registry import SkillRegistry
+from .skill_registry import get_registry
 from .store import PatternStore
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,17 @@ class SessionUpdate:
     last_activity: str
 
 
+@dataclass
+class SkillMatch:
+    """Matched skill from user input"""
+
+    slug: str
+    skill_name: str
+    trigger_pattern: str
+    confidence: float
+    extracted_params: dict[str, str]
+
+
 class OrchestratorListener:
     """
     Connects to CBOS WebSocket and processes question events.
@@ -52,25 +65,32 @@ class OrchestratorListener:
     - Queries pattern store for similar questions
     - Auto-answers high-confidence matches
     - Logs suggestions for medium-confidence matches
+    - Detects skill triggers from user input
     """
 
     def __init__(
         self,
         ws_url: str | None = None,
         store: PatternStore | None = None,
+        skill_registry: SkillRegistry | None = None,
         auto_answer_threshold: float | None = None,
         suggestion_threshold: float | None = None,
+        skill_threshold: float = 0.80,
         auto_answer_enabled: bool = True,
+        skill_detection_enabled: bool = True,
     ):
         self.ws_url = ws_url or f"ws://localhost:{settings.listener_port}"
         self.store = store
+        self.skill_registry = skill_registry
         self.auto_answer_threshold = (
             auto_answer_threshold or settings.auto_answer_threshold
         )
         self.suggestion_threshold = (
             suggestion_threshold or settings.suggestion_threshold
         )
+        self.skill_threshold = skill_threshold
         self.auto_answer_enabled = auto_answer_enabled
+        self.skill_detection_enabled = skill_detection_enabled
 
         self._ws = None
         self._running = False
@@ -84,6 +104,7 @@ class OrchestratorListener:
         self.on_suggestion: Callable[[str, str, float], Awaitable[None]] | None = None
         self.on_auto_answer: Callable[[str, str], Awaitable[None]] | None = None
         self.on_session_update: Callable[[SessionUpdate], Awaitable[None]] | None = None
+        self.on_skill_match: Callable[[SkillMatch], Awaitable[None]] | None = None
 
     async def connect(self) -> None:
         """Connect to CBOS WebSocket server"""
@@ -91,6 +112,11 @@ class OrchestratorListener:
         if self.store is None:
             self.store = PatternStore()
         self.store.connect()
+
+        # Initialize skill registry if not provided
+        if self.skill_registry is None and self.skill_detection_enabled:
+            self.skill_registry = get_registry()
+            self.skill_registry.load_all()
 
         try:
             self._ws = await websockets.connect(
@@ -158,6 +184,11 @@ class OrchestratorListener:
             await self._handle_session_waiting(msg)
         elif msg_type == "sessions":
             await self._handle_sessions_list(msg)
+        elif msg_type == "user_input":
+            # User submitted a prompt - check for skill triggers
+            slug = msg.get("slug", "")
+            text = msg.get("text", "")
+            await self._detect_skills(slug, text)
         elif msg_type == "error":
             logger.error(f"Server error: {msg.get('message')}")
 
@@ -298,6 +329,46 @@ class OrchestratorListener:
         )
 
         logger.info(f"[{slug}] Sent answer: {answer.strip()}")
+
+    async def _detect_skills(self, slug: str, text: str) -> None:
+        """Detect if user input matches any skill triggers"""
+        if not self.skill_detection_enabled or not self.skill_registry:
+            return
+
+        if not text.strip():
+            return
+
+        try:
+            matches = self.skill_registry.find_by_trigger(text)
+
+            for skill, trigger, confidence in matches:
+                if confidence < self.skill_threshold:
+                    continue
+
+                # Extract parameters from the matched text
+                params = self.skill_registry.extract_params(skill, trigger, text)
+
+                skill_match = SkillMatch(
+                    slug=slug,
+                    skill_name=skill.name,
+                    trigger_pattern=trigger.pattern,
+                    confidence=confidence,
+                    extracted_params=params,
+                )
+
+                logger.info(
+                    f"[{slug}] Skill detected: {skill.name} "
+                    f"({confidence:.0%}) params={params}"
+                )
+
+                if self.on_skill_match:
+                    await self.on_skill_match(skill_match)
+
+                # Only report the best match
+                break
+
+        except Exception as e:
+            logger.error(f"[{slug}] Error detecting skills: {e}")
 
     async def stop(self) -> None:
         """Stop the listener gracefully"""

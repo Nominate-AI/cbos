@@ -1,6 +1,6 @@
 [project]
 name = "cbos-orchestrator"
-version = "0.2.0"
+version = "0.3.0"
 description = "CBOS Orchestrator - Pattern extraction and auto-response for Claude Code sessions"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -66,6 +66,7 @@ ignore = [
     "TC002",   # type checking block (not critical)
     "TC003",   # type checking block for stdlib (not critical)
     "PLR0911", # too many return statements
+    "PLW0603", # global statement (singleton pattern)
 ]
 fixable = ["ALL"]
 unfixable = []

@@ -1,0 +1,69 @@
+name: maintenance
+version: "1.0.0"
+description: Run full maintenance cycle on a CB project (cleanup, format, lint, commit)
+
+triggers:
+  - pattern: "run maintenance"
+    confidence: 0.95
+  - pattern: "maintenance cycle"
+    confidence: 0.9
+  - pattern: "cleanup project"
+    confidence: 0.8
+  - pattern: "/cb-maintenance:maintain"
+    confidence: 1.0
+
+parameters:
+  - name: project
+    type: path
+    description: Project path
+    default: "."
+  - name: commit
+    type: bool
+    description: Commit changes after maintenance
+    default: "true"
+
+preconditions:
+  - command: "test -f {project}/pyproject.toml || test -f {project}/CLAUDE.md"
+    expect_exit: 0
+    message: "Not a valid CB project (missing pyproject.toml or CLAUDE.md)"
+
+steps:
+  - name: cleanup-pycache
+    type: bash
+    description: Remove Python cache files
+    command: "find {project} -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true"
+
+  - name: cleanup-egg-info
+    type: bash
+    description: Remove egg-info directories
+    command: "find {project} -type d -name '*.egg-info' -exec rm -rf {} + 2>/dev/null || true"
+
+  - name: format
+    type: bash
+    description: Format code with ruff
+    command: "cd {project} && ruff format . 2>/dev/null || true"
+
+  - name: lint
+    type: bash
+    description: Lint with ruff
+    command: "cd {project} && ruff check --fix . 2>/dev/null || true"
+
+  - name: verify-lint
+    type: bash
+    description: Verify lint passes
+    command: "cd {project} && ruff check ."
+
+  - name: commit-changes
+    type: branch
+    condition: "test '{commit}' = 'true' && test -n \"$(git -C {project} status --porcelain)\""
+    then_steps: ["do-commit"]
+
+  - name: do-commit
+    type: bash
+    description: Commit maintenance changes
+    command: "cd {project} && git add -A && git commit -m 'chore: maintenance cycle - cleanup and formatting'"
+
+postconditions:
+  - command: "cd {project} && ruff check . 2>/dev/null"
+    expect_exit: 0
+    message: "Lint should pass after maintenance"

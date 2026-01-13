@@ -1,0 +1,66 @@
+name: issue
+version: "1.0.0"
+description: Create or manage GitHub issues
+
+triggers:
+  - pattern: "create issue"
+    confidence: 0.95
+  - pattern: "file issue for {repo}"
+    confidence: 0.9
+  - pattern: "open ticket"
+    confidence: 0.85
+  - pattern: "track this in {repo}"
+    confidence: 0.8
+
+parameters:
+  - name: repo
+    type: string
+    description: Repository (org/repo or just repo name)
+    required: true
+  - name: title
+    type: string
+    description: Issue title
+    required: true
+  - name: body
+    type: string
+    description: Issue body/description
+    default: ""
+  - name: labels
+    type: string
+    description: Comma-separated labels
+    default: ""
+  - name: assignee
+    type: string
+    description: Assignee username
+    default: ""
+
+preconditions:
+  - command: "gh auth status"
+    expect_exit: 0
+    message: "Not authenticated with GitHub CLI"
+
+steps:
+  - name: normalize-repo
+    type: bash
+    description: Ensure repo has org prefix
+    command: "echo '{repo}' | grep -q '/' && echo '{repo}' || echo 'Nominate-AI/{repo}'"
+
+  - name: create-issue
+    type: bash
+    description: Create the issue
+    command: "gh issue create --repo {repo} --title \"{title}\" --body \"{body}\""
+
+  - name: add-labels
+    type: branch
+    condition: "test -n '{labels}'"
+    then_steps: ["apply-labels"]
+
+  - name: apply-labels
+    type: bash
+    description: Add labels to issue
+    command: "gh issue edit --repo {repo} --add-label \"{labels}\" $(gh issue list --repo {repo} --limit 1 --json number -q '.[0].number')"
+
+  - name: show-url
+    type: bash
+    description: Show issue URL
+    command: "gh issue view --repo {repo} $(gh issue list --repo {repo} --limit 1 --json number -q '.[0].number') --json url -q .url"

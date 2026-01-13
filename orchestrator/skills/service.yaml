@@ -1,0 +1,66 @@
+name: service
+version: "1.0.0"
+description: Manage systemd services (restart, status, logs)
+
+triggers:
+  - pattern: "restart {service}"
+    confidence: 0.9
+  - pattern: "reload {service}"
+    confidence: 0.85
+  - pattern: "check {service} status"
+    confidence: 0.8
+  - pattern: "view {service} logs"
+    confidence: 0.8
+
+parameters:
+  - name: service
+    type: string
+    description: Service name (e.g., cbapp, cbai, cbauth)
+    required: true
+  - name: action
+    type: choice
+    description: Action to perform
+    choices: ["restart", "status", "logs", "stop", "start"]
+    default: "restart"
+  - name: lines
+    type: string
+    description: Number of log lines to show
+    default: "50"
+
+preconditions:
+  - command: "systemctl list-units --type=service | grep -q {service}"
+    expect_exit: 0
+    message: "Service {service} not found"
+
+steps:
+  - name: check-status
+    type: bash
+    description: Check current service status
+    command: "systemctl status {service} --no-pager"
+
+  - name: perform-action
+    type: branch
+    condition: "test '{action}' = 'logs'"
+    then_steps: ["show-logs"]
+    else_steps: ["service-action"]
+
+  - name: service-action
+    type: bash
+    description: Perform service action
+    command: "sudo systemctl {action} {service}"
+
+  - name: show-logs
+    type: bash
+    description: Show recent logs
+    command: "sudo journalctl -u {service} -n {lines} --no-pager"
+
+  - name: verify
+    type: bash
+    description: Verify service is running
+    command: "systemctl is-active {service}"
+    expect_exit: 0
+
+postconditions:
+  - command: "systemctl is-active {service}"
+    expect: "active"
+    message: "Service should be active after restart"

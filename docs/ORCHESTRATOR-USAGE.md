@@ -1,21 +1,28 @@
 # CBOS Orchestrator Usage Guide
 
-The CBOS Orchestrator provides pattern-based intelligence for Claude Code sessions. It extracts decision patterns from conversation history, stores them with embeddings, and can suggest or auto-answer similar questions in real-time.
+The CBOS Orchestrator provides pattern-based intelligence for Claude Code sessions. It has two main capabilities:
+
+1. **Pattern Store** - Extracts decision patterns from conversation history, stores them with embeddings, and can suggest or auto-answer similar questions in real-time.
+
+2. **Skill Store** - Defines reusable multi-step workflows (release, deploy, test, etc.) that can be triggered by natural language patterns.
 
 ## Quick Start
 
 ```bash
 # Activate environment
-source ~/.pyenv/versions/tinymachines/bin/activate
+source ~/.pyenv/versions/nominates/bin/activate
 
 # Build pattern database from conversation logs
 cbos-patterns build
 
+# List available skills
+cbos-patterns skills list
+
 # Watch live session events
 cbos-patterns watch
 
-# Listen with pattern matching
-cbos-patterns listen
+# Listen with pattern matching and skill detection
+cbos-patterns listen --skills
 ```
 
 ## Commands
@@ -157,7 +164,7 @@ cbos-patterns watch -p 32206
 
 ### `cbos-patterns listen`
 
-Listen to sessions and match patterns in real-time. When questions are detected, queries the pattern database for similar historical questions.
+Listen to sessions and match patterns in real-time. When questions are detected, queries the pattern database for similar historical questions. Can also detect skill triggers from user input.
 
 ```bash
 # Listen with pattern matching (suggestions only)
@@ -166,19 +173,29 @@ cbos-patterns listen
 # Enable auto-answering for high-confidence matches
 cbos-patterns listen --auto-answer
 
+# Enable skill detection
+cbos-patterns listen --skills
+
 # Adjust thresholds
 cbos-patterns listen --auto-threshold 0.90 --suggest-threshold 0.75
+
+# Adjust skill detection threshold
+cbos-patterns listen --skills --skill-threshold 0.85
 
 # Verbose mode (show all session updates)
 cbos-patterns listen -v
 
 # Connect to different port
 cbos-patterns listen -p 32206
+
+# Full featured: patterns + skills + auto-answer
+cbos-patterns listen --auto-answer --skills -v
 ```
 
 **Thresholds:**
 - `--auto-threshold` (default: 0.95): Similarity score required for auto-answering
 - `--suggest-threshold` (default: 0.80): Similarity score required for logging suggestions
+- `--skill-threshold` (default: 0.80): Confidence required for skill detection
 
 **Sample output:**
 ```
@@ -187,40 +204,301 @@ Connecting to: ws://localhost:32205
 Auto-answer: False
 Auto-answer threshold: 95%
 Suggestion threshold: 80%
+Skill detection: True
+Skill threshold: 80%
 
 Connected to CBOS server
-Listening for questions... (Ctrl+C to stop)
+Listening for questions and skills... (Ctrl+C to stop)
 
 [AUTH] Question: Which authentication method should we use?
   Options: JWT, OAuth2, Session-based
 [AUTH] Suggestion (87%): Use JWT with refresh tokens
 [BACKEND] Question: Should I proceed with this refactor?
 [BACKEND] Auto-answered: Yes, proceed with the refactor
+[DEPLOY] Skill: deploy (95%)
+  Params: env=staging, skip_tests=false
 ```
+
+---
+
+## Skills
+
+Skills are reusable multi-step workflows that can be triggered by natural language patterns. Unlike patterns (single Q&A), skills execute sequences of commands.
+
+### `cbos-patterns skills list`
+
+List all available skills from all sources (built-in, user, project).
+
+```bash
+# List all skills
+cbos-patterns skills list
+
+# Output as JSON
+cbos-patterns skills list --json
+```
+
+**Sample output:**
+```
+                    Available Skills (9 total)
+┏━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name        ┃ Version ┃ Description                 ┃ Triggers             ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ commit      │ 1.0.0   │ Git commit workflow...      │ commit and push, ... │
+│ deploy      │ 1.0.0   │ Deploy to staging/prod      │ deploy to {env}, ... │
+│ release     │ 1.0.0   │ Release with version bump   │ release v{version}   │
+│ test        │ 1.0.0   │ Run tests (pytest/npm)      │ run tests, ...       │
+└─────────────┴─────────┴─────────────────────────────┴──────────────────────┘
+```
+
+### `cbos-patterns skills show <name>`
+
+Show detailed information about a specific skill.
+
+```bash
+# Show skill details
+cbos-patterns skills show release
+
+# Output as JSON
+cbos-patterns skills show deploy --json
+```
+
+**Sample output:**
+```
+release v1.0.0
+Release a new version with version bump, commit, tag, and push
+
+Triggers:
+  • release v{version} (confidence: 0.95)
+  • release {version} (confidence: 0.9)
+  • bump version to {version} (confidence: 0.85)
+
+Parameters:
+  • version*: semver
+    Version number (e.g., 1.2.3)
+  • message: string (default: Release {version})
+    Release message
+
+Steps:
+  1. [edit] bump-pyproject
+     Bump version in pyproject.toml
+  2. [edit] bump-init
+     Bump version in __init__.py
+  3. [bash] stage
+     Stage all changes
+  4. [bash] commit
+     Create release commit
+  5. [bash] tag
+     Create version tag
+  6. [bash] push
+     Push commit and tag
+
+Preconditions:
+  • git status --porcelain
+    Working directory must be clean
+```
+
+### `cbos-patterns skills match <text>`
+
+Find skills that match a given input text. Useful for testing trigger patterns.
+
+```bash
+# Find matching skills
+cbos-patterns skills match "deploy to staging"
+
+# With result limit
+cbos-patterns skills match "release v1.2.3" --limit 3
+```
+
+**Sample output:**
+```
+Matching skills for: deploy to staging
+
+deploy (95%)
+  Trigger: deploy to {env}
+  Description: Deploy a service to staging or production
+  Extracted params: {'env': 'staging', 'skip_tests': 'false'}
+```
+
+### `cbos-patterns skills mine`
+
+Mine potential skills from Claude Code conversation logs by analyzing tool call sequences.
+
+```bash
+# Mine all conversations
+cbos-patterns skills mine
+
+# Filter by project
+cbos-patterns skills mine -p myproject
+
+# Verbose output (show examples)
+cbos-patterns skills mine -v
+
+# Output as JSON
+cbos-patterns skills mine --json
+```
+
+**Sample output:**
+```
+Mining skills from conversation logs...
+Scanning: /home/user/.claude/projects
+
+Found 47 potential skills
+
+release: 12 occurrences
+service: 8 occurrences
+commit: 23 occurrences
+test: 4 occurrences
+
+Summary:
+  Total candidates: 47
+  Unique skill types: 4
+```
+
+## Built-in Skills
+
+The orchestrator ships with 9 built-in skills:
+
+| Skill | Description | Example Triggers |
+|-------|-------------|------------------|
+| `release` | Version bump, commit, tag, push | "release v1.2.3", "bump to 2.0.0" |
+| `deploy` | Deploy to staging/production | "deploy to staging", "push to production" |
+| `service` | systemctl operations | "restart nginx", "check status of api" |
+| `commit` | Git add, commit, push | "commit and push", "save changes" |
+| `test` | Run pytest or npm test | "run tests", "run pytest" |
+| `format` | Ruff format and lint | "format code", "run ruff" |
+| `pr` | Create pull request | "create pr", "open pull request" |
+| `issue` | Create GitHub issue | "create issue", "file issue" |
+| `maintenance` | Full cleanup cycle | "run maintenance", "cleanup project" |
+
+## Skill Sources
+
+Skills are loaded from three locations (in priority order):
+
+1. **Project skills**: `.cbos/skills/*.yaml` - Project-specific workflows
+2. **User skills**: `~/.cbos/skills/*.yaml` - Personal global workflows
+3. **Built-in skills**: `orchestrator/skills/*.yaml` - Shipped with orchestrator
+
+Higher priority sources override lower priority when skill names conflict.
+
+## Creating Custom Skills
+
+Create a YAML file in `~/.cbos/skills/` or `.cbos/skills/`:
+
+```yaml
+# ~/.cbos/skills/my-deploy.yaml
+name: my-deploy
+version: "1.0.0"
+description: Custom deployment workflow
+
+triggers:
+  - pattern: "deploy {service} to {env}"
+    confidence: 0.9
+  - pattern: "push {service}"
+    confidence: 0.8
+
+parameters:
+  - name: service
+    type: string
+    description: Service to deploy
+    required: true
+  - name: env
+    type: choice
+    choices: ["staging", "production"]
+    default: "staging"
+
+preconditions:
+  - command: "git status --porcelain"
+    expect: ""
+    message: "Working directory must be clean"
+
+steps:
+  - name: build
+    type: bash
+    command: "docker build -t {service} ."
+
+  - name: push
+    type: bash
+    command: "docker push registry/{service}:latest"
+
+  - name: deploy
+    type: bash
+    command: "kubectl rollout restart deployment/{service} -n {env}"
+
+  - name: verify
+    type: bash
+    command: "kubectl rollout status deployment/{service} -n {env}"
+    expect_exit: 0
+
+postconditions:
+  - command: "curl -s http://{service}.{env}/health"
+    expect: "ok"
+    message: "Health check should pass"
+```
+
+### Step Types
+
+| Type | Description | Fields |
+|------|-------------|--------|
+| `bash` | Run shell command | `command`, `expect_exit` |
+| `edit` | Edit file with regex | `file`, `pattern`, `replacement` |
+| `read` | Read file content | `file` |
+| `confirm` | Ask user confirmation | `message` |
+| `branch` | Conditional execution | `condition`, `then_steps`, `else_steps` |
+
+### Parameter Types
+
+| Type | Description |
+|------|-------------|
+| `string` | Any text value |
+| `semver` | Semantic version (1.2.3) |
+| `path` | File or directory path |
+| `choice` | One of predefined options |
+| `bool` | true/false |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    cbos-patterns CLI                            │
-├─────────────────────────────────────────────────────────────────┤
-│  build   │  query  │  search │  stats  │  watch  │  listen     │
-└────┬─────┴────┬────┴────┬────┴────┬────┴────┬────┴────┬────────┘
-     │          │         │         │         │         │
-     ▼          ▼         ▼         ▼         ▼         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      PatternStore                                │
-│  - Pattern CRUD via SQLite                                      │
-│  - Vector similarity via vectl                                  │
-│  - Embedding generation via CBAI                                │
-└──────────────┬──────────────────────────────────┬───────────────┘
-               │                                  │
-┌──────────────▼──────────────┐    ┌──────────────▼───────────────┐
-│   SQLite (patterns.db)      │    │   vectl (vectors.bin)        │
-│   - Pattern metadata        │    │   - 768-dim embeddings       │
-│   - Question text           │    │   - K-means clustering       │
-│   - User answers            │    │   - Similarity search        │
-└─────────────────────────────┘    └──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        cbos-patterns CLI                            │
+├─────────────────────────────────────────────────────────────────────┤
+│  build │ query │ search │ stats │ watch │ listen │ skills          │
+└───┬────┴───┬───┴────┬───┴───┬───┴───┬───┴───┬────┴───┬─────────────┘
+    │        │        │       │       │       │        │
+    ▼        ▼        ▼       ▼       ▼       ▼        ▼
+┌───────────────────────────────────┐ ┌────────────────────────────────┐
+│          PatternStore             │ │        SkillRegistry           │
+│  - Pattern CRUD via SQLite        │ │  - YAML skill definitions      │
+│  - Vector similarity via vectl    │ │  - Trigger pattern matching    │
+│  - Embedding generation via CBAI  │ │  - Parameter extraction        │
+└────────────┬──────────────────────┘ └───────────────┬────────────────┘
+             │                                        │
+┌────────────▼─────────────┐  ┌───────────────────────▼────────────────┐
+│ SQLite + vectl           │  │ YAML Files                             │
+│ - patterns.db            │  │ - orchestrator/skills/*.yaml (builtin) │
+│ - vectors.bin            │  │ - ~/.cbos/skills/*.yaml (user)         │
+└──────────────────────────┘  │ - .cbos/skills/*.yaml (project)        │
+                              └────────────────────────────────────────┘
+```
+
+### Unified Listener Flow
+
+```
+CBOS WebSocket Server (port 32205)
+        │
+        ├──── formatted_event (category: question)
+        │            │
+        │            ▼
+        │     PatternStore.query_similar_text()
+        │       - >= 95%: Auto-answer
+        │       - >= 80%: Suggest
+        │
+        └──── user_input
+                     │
+                     ▼
+              SkillRegistry.find_by_trigger()
+                - Match patterns
+                - Extract params
+                - Fire on_skill_match callback
 ```
 
 ## Data Flow
@@ -289,6 +567,9 @@ Environment variables (prefix: `CBOS_ORCHESTRATOR_`):
 | `~/.cbos/patterns.db` | SQLite database with pattern metadata |
 | `~/.cbos/vectors.bin` | vectl vector store (100MB default) |
 | `~/.cbos/vectors.log` | vectl operation log |
+| `~/.cbos/skills/*.yaml` | User-defined global skills |
+| `.cbos/skills/*.yaml` | Project-specific skills |
+| `orchestrator/skills/*.yaml` | Built-in skills |
 
 ## Dependencies
 

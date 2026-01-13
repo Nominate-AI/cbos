@@ -1,0 +1,76 @@
+name: release
+version: "1.0.0"
+description: Release a new version with version bump, commit, tag, and push
+
+triggers:
+  - pattern: "release v{version}"
+    confidence: 0.95
+  - pattern: "release {version}"
+    confidence: 0.90
+  - pattern: "bump version to {version}"
+    confidence: 0.85
+  - pattern: "bump to {version}"
+    confidence: 0.85
+  - pattern: "publish {version}"
+    confidence: 0.80
+  - pattern: "tag {version}"
+    confidence: 0.75
+
+parameters:
+  - name: version
+    type: semver
+    description: Version number (e.g., 1.2.3)
+    required: true
+  - name: message
+    type: string
+    description: Release message
+    required: false
+    default: "Release {version}"
+
+preconditions:
+  - command: "git status --porcelain"
+    expect: ""
+    message: "Working directory must be clean"
+  - command: "git branch --show-current"
+    expect: "main|master"
+    message: "Must be on main or master branch"
+
+steps:
+  - name: bump-pyproject
+    type: edit
+    description: Bump version in pyproject.toml
+    file: pyproject.toml
+    pattern: 'version = "[\\d.]+"'
+    replacement: 'version = "{version}"'
+
+  - name: bump-init
+    type: edit
+    description: Bump version in __init__.py
+    file: "**/__init__.py"
+    pattern: '__version__ = "[\\d.]+"'
+    replacement: '__version__ = "{version}"'
+
+  - name: stage
+    type: bash
+    description: Stage all changes
+    command: "git add -A"
+
+  - name: commit
+    type: bash
+    description: Create release commit
+    command: 'git commit -m "v{version}: {message}"'
+
+  - name: tag
+    type: bash
+    description: Create version tag
+    command: "git tag v{version}"
+
+  - name: push
+    type: bash
+    description: Push commit and tag
+    command: "git push && git push --tags"
+
+postconditions:
+  - command: "git tag -l v{version}"
+    expect: "v{version}"
+    message: "Tag should exist locally"

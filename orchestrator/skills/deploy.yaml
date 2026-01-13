@@ -1,0 +1,71 @@
+name: deploy
+version: "1.0.0"
+description: Deploy a service to staging or production
+
+triggers:
+  - pattern: "deploy to {env}"
+    confidence: 0.95
+  - pattern: "push to {env}"
+    confidence: 0.85
+  - pattern: "release to {env}"
+    confidence: 0.85
+  - pattern: "update {env}"
+    confidence: 0.8
+
+parameters:
+  - name: env
+    type: choice
+    description: Target environment
+    choices: ["staging", "production", "testsite"]
+    required: true
+  - name: service
+    type: string
+    description: Service to deploy
+    required: true
+  - name: skip_tests
+    type: bool
+    description: Skip tests before deploy
+    default: "false"
+
+preconditions:
+  - command: "git status --porcelain"
+    expect: ""
+    message: "Working directory must be clean before deploy"
+
+steps:
+  - name: run-tests
+    type: branch
+    condition: "test '{skip_tests}' != 'true'"
+    then_steps: ["tests"]
+
+  - name: tests
+    type: bash
+    description: Run tests before deploy
+    command: "pytest -v"
+    expect_exit: 0
+
+  - name: git-pull
+    type: bash
+    description: Pull latest changes
+    command: "git pull --rebase"
+
+  - name: restart-service
+    type: bash
+    description: Restart the service
+    command: "sudo systemctl restart {service}"
+
+  - name: verify-health
+    type: bash
+    description: Check service health
+    command: "sleep 3 && systemctl is-active {service}"
+    expect_exit: 0
+
+  - name: show-logs
+    type: bash
+    description: Show recent logs
+    command: "sudo journalctl -u {service} -n 20 --no-pager"
+
+postconditions:
+  - command: "systemctl is-active {service}"
+    expect: "active"
+    message: "Service should be active after deploy"

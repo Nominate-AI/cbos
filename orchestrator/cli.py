@@ -11,6 +11,7 @@ from rich.table import Table
 
 from .extractor import DecisionPatternExtractor
 from .models import QuestionType
+from .skill_registry import get_registry
 from .store import PatternStore
 
 console = Console()
@@ -209,13 +210,20 @@ async def cmd_listen(args):
     )
     console.print(f"Auto-answer threshold: [cyan]{args.auto_threshold:.0%}[/cyan]")
     console.print(f"Suggestion threshold: [cyan]{args.suggest_threshold:.0%}[/cyan]")
+    console.print(
+        f"Skill detection: [{'green' if args.skills else 'yellow'}]{args.skills}[/]"
+    )
+    if args.skills:
+        console.print(f"Skill threshold: [cyan]{args.skill_threshold:.0%}[/cyan]")
     console.print()
 
     listener = OrchestratorListener(
         ws_url=f"ws://localhost:{args.port}",
         auto_answer_threshold=args.auto_threshold,
         suggestion_threshold=args.suggest_threshold,
+        skill_threshold=args.skill_threshold,
         auto_answer_enabled=args.auto_answer,
+        skill_detection_enabled=args.skills,
     )
 
     # Set up callbacks for display
@@ -246,16 +254,30 @@ async def cmd_listen(args):
                 f"[dim][{update.slug}] state={update.state} msgs={update.message_count}[/dim]"
             )
 
+    async def on_skill_match(match):
+        console.print(
+            f"[magenta][{match.slug}][/magenta] Skill: {match.skill_name} "
+            f"({match.confidence:.0%})"
+        )
+        if match.extracted_params:
+            params_str = ", ".join(
+                f"{k}={v}" for k, v in match.extracted_params.items()
+            )
+            console.print(f"  Params: {params_str}")
+
     listener.on_connect = on_connect
     listener.on_disconnect = on_disconnect
     listener.on_question = on_question
     listener.on_suggestion = on_suggestion
     listener.on_auto_answer = on_auto_answer
     listener.on_session_update = on_session_update
+    listener.on_skill_match = on_skill_match
 
     try:
         await listener.connect()
-        console.print("[dim]Listening for questions... (Ctrl+C to stop)[/dim]\n")
+        console.print(
+            "[dim]Listening for questions and skills... (Ctrl+C to stop)[/dim]\n"
+        )
         await listener.listen()
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
@@ -316,10 +338,206 @@ def cmd_search(args):
         console.print(table)
 
 
+def cmd_skills_list(args):
+    """List all available skills"""
+    from pathlib import Path
+
+    registry = get_registry()
+
+    # Load with project path if we're in a project
+    project_path = Path.cwd()
+    registry.load_all(project_path)
+
+    skills = registry.list_skills()
+
+    if not skills:
+        console.print("[yellow]No skills found.[/yellow]")
+        return
+
+    if args.json:
+        output = [registry.to_dict(s) for s in skills]
+        print(json.dumps(output, indent=2))
+    else:
+        table = Table(title=f"Available Skills ({len(skills)} total)")
+        table.add_column("Name", style="cyan", width=15)
+        table.add_column("Version", style="dim", width=8)
+        table.add_column("Description", style="white", max_width=50)
+        table.add_column("Triggers", style="yellow", width=20)
+
+        for skill in sorted(skills, key=lambda s: s.name):
+            triggers = ", ".join(t.pattern[:20] for t in skill.triggers[:2])
+            if len(skill.triggers) > 2:
+                triggers += f" (+{len(skill.triggers) - 2})"
+
+            table.add_row(
+                skill.name,
+                skill.version,
+                skill.description[:50] + "..."
+                if len(skill.description) > 50
+                else skill.description,
+                triggers,
+            )
+
+        console.print(table)
+
+
+def cmd_skills_show(args):
+    """Show details about a specific skill"""
+    from pathlib import Path
+
+    registry = get_registry()
+    registry.load_all(Path.cwd())
+
+    skill = registry.get(args.name)
+
+    if not skill:
+        console.print(f"[red]Skill '{args.name}' not found.[/red]")
+        return
+
+    if args.json:
+        print(json.dumps(registry.to_dict(skill), indent=2))
+    else:
+        console.print(f"\n[bold cyan]{skill.name}[/bold cyan] v{skill.version}")
+        console.print(f"[dim]{skill.description}[/dim]\n")
+
+        # Triggers
+        console.print("[bold]Triggers:[/bold]")
+        for t in skill.triggers:
+            console.print(f"  • {t.pattern} [dim](confidence: {t.confidence})[/dim]")
+
+        # Parameters
+        if skill.parameters:
+            console.print("\n[bold]Parameters:[/bold]")
+            for p in skill.parameters:
+                req = "[red]*[/red]" if p.required else ""
+                default = f" [dim](default: {p.default})[/dim]" if p.default else ""
+                choices = f" [yellow]{p.choices}[/yellow]" if p.choices else ""
+                console.print(f"  • {p.name}{req}: {p.type.value}{choices}{default}")
+                if p.description:
+                    console.print(f"    [dim]{p.description}[/dim]")
+
+        # Steps
+        if skill.steps:
+            console.print("\n[bold]Steps:[/bold]")
+            for i, s in enumerate(skill.steps, 1):
+                console.print(f"  {i}. [{s.type.value}] {s.name}")
+                if s.description:
+                    console.print(f"     [dim]{s.description}[/dim]")
+
+        # Preconditions
+        if skill.preconditions:
+            console.print("\n[bold]Preconditions:[/bold]")
+            for c in skill.preconditions:
+                console.print(f"  • {c.command}")
+                if c.message:
+                    console.print(f"    [dim]{c.message}[/dim]")
+
+        console.print()
+
+
+def cmd_skills_mine(args):
+    """Mine skills from conversation logs"""
+
+    from .skill_miner import SkillMiner
+
+    console.print("[bold blue]Mining skills from conversation logs...[/bold blue]")
+
+    miner = SkillMiner()
+
+    # Set project filter if provided
+    if args.project:
+        miner.project_filter = args.project
+
+    # Scan logs
+    console.print(f"Scanning: [dim]{miner.claude_dir}[/dim]")
+    candidates = miner.scan_all()
+
+    if not candidates:
+        console.print("[yellow]No skill candidates found.[/yellow]")
+        return
+
+    console.print(f"Found [green]{len(candidates)}[/green] potential skills\n")
+
+    # Group by skill type
+    grouped: dict[str, list] = {}
+    for c in candidates:
+        if c.skill_type not in grouped:
+            grouped[c.skill_type] = []
+        grouped[c.skill_type].append(c)
+
+    if args.json:
+        output = []
+        for type_candidates in grouped.values():
+            for c in type_candidates:
+                output.append(
+                    {
+                        "skill_type": c.skill_type,
+                        "confidence": c.confidence,
+                        "conversation_id": c.conversation_id,
+                        "project": c.project,
+                        "matched_tools": c.matched_tools,
+                        "matched_text": c.matched_text_patterns,
+                    }
+                )
+        print(json.dumps(output, indent=2))
+    else:
+        for skill_type, type_candidates in sorted(
+            grouped.items(), key=lambda x: -len(x[1])
+        ):
+            console.print(
+                f"[bold cyan]{skill_type}[/bold cyan]: {len(type_candidates)} occurrences"
+            )
+
+            if args.verbose:
+                for c in type_candidates[:3]:
+                    console.print(f"  • [dim]{c.conversation_id[:40]}...[/dim]")
+                    console.print(f"    Tools: {', '.join(c.matched_tools[:4])}")
+                    if c.matched_text_patterns:
+                        console.print(
+                            f"    Text: {', '.join(c.matched_text_patterns[:3])}"
+                        )
+                if len(type_candidates) > 3:
+                    console.print(
+                        f"  [dim]... and {len(type_candidates) - 3} more[/dim]"
+                    )
+
+        console.print("\n[bold]Summary:[/bold]")
+        console.print(f"  Total candidates: [green]{len(candidates)}[/green]")
+        console.print(f"  Unique skill types: [green]{len(grouped)}[/green]")
+
+
+def cmd_skills_match(args):
+    """Find skills matching input text"""
+    from pathlib import Path
+
+    registry = get_registry()
+    registry.load_all(Path.cwd())
+
+    matches = registry.find_by_trigger(args.text)
+
+    if not matches:
+        console.print("[yellow]No matching skills found.[/yellow]")
+        return
+
+    console.print(f"Matching skills for: [cyan]{args.text}[/cyan]\n")
+
+    for skill, trigger, confidence in matches[: args.limit]:
+        console.print(f"[bold green]{skill.name}[/bold green] ({confidence:.0%})")
+        console.print(f"  Trigger: {trigger.pattern}")
+        console.print(f"  Description: [dim]{skill.description}[/dim]")
+
+        # Extract params
+        params = registry.extract_params(skill, trigger, args.text)
+        if params:
+            console.print(f"  Extracted params: {params}")
+
+        console.print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="cbos-patterns",
-        description="Query and manage CBOS decision patterns",
+        description="Query and manage CBOS decision patterns and skills",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -424,7 +642,62 @@ def main():
         help="Similarity threshold for suggestions (default: 0.80)",
     )
     listen_parser.add_argument(
+        "--skills",
+        action="store_true",
+        help="Enable skill detection from user input",
+    )
+    listen_parser.add_argument(
+        "--skill-threshold",
+        type=float,
+        default=0.80,
+        help="Confidence threshold for skill detection (default: 0.80)",
+    )
+    listen_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show all session updates"
+    )
+
+    # Skills command group
+    skills_parser = subparsers.add_parser("skills", help="Manage and query skills")
+    skills_subparsers = skills_parser.add_subparsers(
+        dest="skills_command", required=True
+    )
+
+    # skills list
+    skills_list_parser = skills_subparsers.add_parser(
+        "list", help="List all available skills"
+    )
+    skills_list_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+
+    # skills show
+    skills_show_parser = skills_subparsers.add_parser("show", help="Show skill details")
+    skills_show_parser.add_argument("name", type=str, help="Skill name")
+    skills_show_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+
+    # skills mine
+    skills_mine_parser = skills_subparsers.add_parser(
+        "mine", help="Mine skills from conversation logs"
+    )
+    skills_mine_parser.add_argument(
+        "-p", "--project", type=str, help="Filter by project name"
+    )
+    skills_mine_parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Show detailed output"
+    )
+    skills_mine_parser.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+
+    # skills match
+    skills_match_parser = skills_subparsers.add_parser(
+        "match", help="Find skills matching input text"
+    )
+    skills_match_parser.add_argument("text", type=str, help="Input text to match")
+    skills_match_parser.add_argument(
+        "-l", "--limit", type=int, default=5, help="Maximum results"
     )
 
     args = parser.parse_args()
@@ -449,6 +722,15 @@ def main():
                 verbose=not args.quiet,
             )
         )
+    elif args.command == "skills":
+        if args.skills_command == "list":
+            cmd_skills_list(args)
+        elif args.skills_command == "show":
+            cmd_skills_show(args)
+        elif args.skills_command == "mine":
+            cmd_skills_mine(args)
+        elif args.skills_command == "match":
+            cmd_skills_match(args)
 
 
 if __name__ == "__main__":

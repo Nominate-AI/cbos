@@ -1,0 +1,61 @@
+name: pr
+version: "1.0.0"
+description: Create a pull request on GitHub
+
+triggers:
+  - pattern: "create pr"
+    confidence: 0.95
+  - pattern: "open pull request"
+    confidence: 0.9
+  - pattern: "pr for {branch}"
+    confidence: 0.85
+  - pattern: "submit for review"
+    confidence: 0.8
+
+parameters:
+  - name: title
+    type: string
+    description: PR title
+    required: true
+  - name: body
+    type: string
+    description: PR description
+    default: ""
+  - name: base
+    type: string
+    description: Base branch
+    default: "main"
+  - name: draft
+    type: bool
+    description: Create as draft
+    default: "false"
+
+preconditions:
+  - command: "git rev-parse --git-dir"
+    expect_exit: 0
+    message: "Not in a git repository"
+  - command: "gh auth status"
+    expect_exit: 0
+    message: "Not authenticated with GitHub CLI"
+
+steps:
+  - name: check-branch
+    type: bash
+    description: Ensure not on base branch
+    command: "test \"$(git branch --show-current)\" != '{base}'"
+    expect_exit: 0
+
+  - name: push
+    type: bash
+    description: Push current branch
+    command: "git push -u origin HEAD"
+
+  - name: create-pr
+    type: bash
+    description: Create pull request
+    command: "gh pr create --title \"{title}\" --body \"{body}\" --base {base}"
+
+  - name: show-url
+    type: bash
+    description: Show PR URL
+    command: "gh pr view --json url -q .url"

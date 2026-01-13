@@ -1,0 +1,50 @@
+name: format
+version: "1.0.0"
+description: Format and lint code with ruff (Python) or prettier (JS/TS)
+
+triggers:
+  - pattern: "format code"
+    confidence: 0.9
+  - pattern: "run ruff"
+    confidence: 0.95
+  - pattern: "lint this"
+    confidence: 0.85
+  - pattern: "fix style"
+    confidence: 0.8
+
+parameters:
+  - name: path
+    type: path
+    description: Path to format
+    default: "."
+  - name: fix
+    type: bool
+    description: Auto-fix issues
+    default: "true"
+
+steps:
+  - name: detect-language
+    type: bash
+    description: Detect project type
+    command: "test -f pyproject.toml && echo 'python' || echo 'other'"
+
+  - name: python-format
+    type: branch
+    condition: "test -f pyproject.toml"
+    then_steps: ["ruff-format", "ruff-check"]
+
+  - name: ruff-format
+    type: bash
+    description: Format with ruff
+    command: "ruff format {path}"
+
+  - name: ruff-check
+    type: bash
+    description: Lint with ruff
+    command: "ruff check --fix {path}"
+
+  - name: verify
+    type: bash
+    description: Verify no issues remain
+    command: "ruff check {path}"
+    expect_exit: 0

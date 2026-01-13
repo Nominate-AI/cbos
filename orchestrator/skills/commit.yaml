@@ -1,0 +1,64 @@
+name: commit
+version: "1.0.0"
+description: Git commit workflow with status check and push
+
+triggers:
+  - pattern: "commit and push"
+    confidence: 0.9
+  - pattern: "save changes"
+    confidence: 0.8
+  - pattern: "commit this"
+    confidence: 0.85
+  - pattern: "push to github"
+    confidence: 0.8
+
+parameters:
+  - name: message
+    type: string
+    description: Commit message
+    required: true
+  - name: push
+    type: bool
+    description: Push after commit
+    default: "true"
+
+preconditions:
+  - command: "git rev-parse --git-dir"
+    expect_exit: 0
+    message: "Not in a git repository"
+
+steps:
+  - name: status
+    type: bash
+    description: Check git status
+    command: "git status --short"
+
+  - name: diff
+    type: bash
+    description: Show changes to be committed
+    command: "git diff --stat"
+
+  - name: stage
+    type: bash
+    description: Stage all changes
+    command: "git add -A"
+
+  - name: commit
+    type: bash
+    description: Create commit
+    command: "git commit -m \"{message}\""
+
+  - name: push
+    type: branch
+    condition: "test '{push}' = 'true'"
+    then_steps: ["do-push"]
+
+  - name: do-push
+    type: bash
+    description: Push to remote
+    command: "git push"
+
+postconditions:
+  - command: "git status --porcelain"
+    expect: ""
+    message: "Working directory should be clean"

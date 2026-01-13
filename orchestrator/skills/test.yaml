@@ -1,0 +1,54 @@
+name: test
+version: "1.0.0"
+description: Run tests for Python or Node.js projects
+
+triggers:
+  - pattern: "run tests"
+    confidence: 0.9
+  - pattern: "run pytest"
+    confidence: 0.95
+  - pattern: "test this"
+    confidence: 0.8
+  - pattern: "check tests"
+    confidence: 0.8
+
+parameters:
+  - name: path
+    type: path
+    description: Test path or pattern
+    default: "."
+  - name: verbose
+    type: bool
+    description: Verbose output
+    default: "true"
+  - name: coverage
+    type: bool
+    description: Run with coverage
+    default: "false"
+
+steps:
+  - name: detect-framework
+    type: bash
+    description: Detect test framework
+    command: "test -f pyproject.toml && echo 'python' || (test -f package.json && echo 'node') || echo 'unknown'"
+
+  - name: run-python-tests
+    type: branch
+    condition: "test -f pyproject.toml"
+    then_steps: ["pytest"]
+    else_steps: ["check-node"]
+
+  - name: pytest
+    type: bash
+    description: Run pytest
+    command: "pytest {path} -v"
+
+  - name: check-node
+    type: branch
+    condition: "test -f package.json"
+    then_steps: ["npm-test"]
+
+  - name: npm-test
+    type: bash
+    description: Run npm test
+    command: "npm test"
